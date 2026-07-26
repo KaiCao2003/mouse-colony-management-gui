@@ -1,0 +1,51 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python and uv environments
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.python-version.local
+
+# Test, lint, and type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Dedicated browser profiles and Playwright artifacts
+browser-profile/
+browser-profiles/
+playwright-report/
+test-results/
+blob-report/
+*.har
+*.trace
+trace.zip
+screenshots/
+videos/
+
+# Snapshots, logs, and sanitized discovery output
+data/*
+!data/.gitkeep
+snapshot.json
+snapshot-*.json
+discovery-output/
+discovery-*.json
+*.log
+
+# macOS and editor metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
