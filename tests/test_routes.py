@@ -166,6 +166,7 @@ def test_create_and_update_forward_breeding_pair_flag(tmp_path: Path) -> None:
         assert created is not None
         assert created["is_breeding_pair"] is True
         assert created["room"] == "ROOM-REGULAR"
+        assert created["protocol"] is None
 
         normal_id = database.create_cage(
             cage_card_id="BREED-UPDATE",
@@ -176,9 +177,12 @@ def test_create_and_update_forward_breeding_pair_flag(tmp_path: Path) -> None:
             f"/cages/{normal_id}/update",
             headers=_csrf(client),
             data={
+                "cage_card_id": "BREED-REVISED",
                 "room": "ROOM-REGULAR",
                 "protocol": "MUST-NOT-REPLACE",
                 "note": "breeding pair",
+                "on_census_date": "2026-03-04",
+                "off_census_date": "2026-05-06",
                 "is_breeding_pair": "on",
             },
             follow_redirects=False,
@@ -187,9 +191,73 @@ def test_create_and_update_forward_breeding_pair_flag(tmp_path: Path) -> None:
 
     assert update_response.status_code == 303
     assert updated is not None
+    assert updated["cage_card_id"] == "BREED-REVISED"
     assert updated["is_breeding_pair"] is True
     assert updated["room"] == "ROOM-REGULAR"
+    assert updated["on_census_date"] == "2026-03-04"
+    assert updated["off_census_date"] == "2026-05-06"
     assert updated["protocol"] == "KEEP-ME"
+
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(
+            cage_card_id="DETAIL-FORM",
+            on_census_date="2026-01-02",
+            off_census_date="2026-02-03",
+        )
+        detail_response = client.get(f"/cages/{cage_id}")
+
+    assert detail_response.status_code == 200
+    assert 'name="cage_card_id" value="DETAIL-FORM"' in detail_response.text
+    assert 'name="on_census_date" value="2026-01-02"' in detail_response.text
+    assert 'name="off_census_date" value="2026-02-03"' in detail_response.text
+
+
+def test_split_and_wean_ignore_forged_protocol_fields(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        source_id = database.create_cage(
+            cage_card_id="PRIVATE-SOURCE",
+            animal_count=2,
+            protocol="SOURCE-PRIVATE",
+            is_breeding_pair=True,
+        )
+        animals = database.list_animals(source_id)
+        headers = _csrf(client)
+
+        split_response = client.post(
+            f"/cages/{source_id}/split",
+            headers=headers,
+            data={
+                "animal_ids": str(animals[0]["id"]),
+                "destination_cage_card_id": "PRIVATE-SPLIT",
+                "destination_protocol": "FORGED-SPLIT",
+            },
+            follow_redirects=False,
+        )
+        split_id = int(split_response.headers["location"].split("?", 1)[0].rsplit("/", 1)[1])
+
+        wean_response = client.post(
+            f"/cages/{source_id}/wean",
+            headers=headers,
+            data={
+                "count": "2",
+                "sex": "F",
+                "dob": "2026-07-01",
+                "genotype": "WT",
+                "destination_cage_card_id": "PRIVATE-WEAN",
+                "destination_protocol": "FORGED-WEAN",
+            },
+            follow_redirects=False,
+        )
+        wean_id = int(wean_response.headers["location"].split("?", 1)[0].rsplit("/", 1)[1])
+        split = database.get_cage(split_id)
+        wean = database.get_cage(wean_id)
+
+    assert split_response.status_code == 303
+    assert wean_response.status_code == 303
+    assert split is not None and split["protocol"] == "SOURCE-PRIVATE"
+    assert wean is not None and wean["protocol"] == "SOURCE-PRIVATE"
 
 
 def test_root_hash_navigation_targets_and_filter_links(tmp_path: Path) -> None:

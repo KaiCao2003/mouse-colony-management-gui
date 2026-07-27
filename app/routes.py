@@ -169,7 +169,6 @@ def create_cage(
     dob: Annotated[str, Form()] = "",
     genotype: Annotated[str, Form()] = "",
     room: Annotated[str, Form()] = "",
-    protocol: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
     is_breeding_pair: Annotated[bool, Form()] = False,
 ) -> RedirectResponse:
@@ -181,7 +180,6 @@ def create_cage(
             dob=_clean(dob),
             genotype=_clean(genotype),
             room=_clean(room),
-            protocol=_clean(protocol),
             note=_clean(note),
             creation_type="manual",
             is_breeding_pair=is_breeding_pair,
@@ -226,7 +224,6 @@ def split_cage(
     animal_ids: Annotated[list[int] | None, Form()] = None,
     destination_cage_card_id: Annotated[str, Form()] = "",
     destination_room: Annotated[str, Form()] = "",
-    destination_protocol: Annotated[str, Form()] = "",
     destination_note: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     if not animal_ids:
@@ -242,7 +239,6 @@ def split_cage(
             animal_ids=animal_ids,
             cage_card_id=_clean(destination_cage_card_id),
             room=_clean(destination_room),
-            protocol=_clean(destination_protocol),
             note=_clean(destination_note),
         )
     except ValueError as exc:
@@ -264,7 +260,6 @@ def wean_cage(
     genotype: Annotated[str, Form()] = "",
     destination_cage_card_id: Annotated[str, Form()] = "",
     destination_room: Annotated[str, Form()] = "",
-    destination_protocol: Annotated[str, Form()] = "",
     destination_note: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     try:
@@ -276,7 +271,6 @@ def wean_cage(
             genotype=_clean(genotype),
             cage_card_id=_clean(destination_cage_card_id),
             room=_clean(destination_room),
-            protocol=_clean(destination_protocol),
             note=_clean(destination_note),
         )
     except ValueError as exc:
@@ -301,15 +295,21 @@ def toggle_cage(cage_id: int, request: Request) -> RedirectResponse:
 def update_cage(
     cage_id: int,
     request: Request,
+    cage_card_id: Annotated[str, Form()] = "",
     room: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
+    on_census_date: Annotated[str, Form()] = "",
+    off_census_date: Annotated[str, Form()] = "",
     is_breeding_pair: Annotated[bool, Form()] = False,
 ) -> RedirectResponse:
     try:
         _db(request).update_cage(
             cage_id,
+            cage_card_id=cage_card_id,
             room=_clean(room),
             note=_clean(note),
+            on_census_date=_clean(on_census_date),
+            off_census_date=_clean(off_census_date),
             is_breeding_pair=is_breeding_pair,
         )
     except ValueError as exc:

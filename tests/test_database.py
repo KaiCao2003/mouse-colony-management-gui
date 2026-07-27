@@ -136,6 +136,78 @@ def test_room_aliases_and_breeding_pair_rules_preserve_protocol(database: Databa
     assert unmarked["protocol"] == "HIDDEN-PROTOCOL"
 
 
+def test_cage_details_can_be_revised_without_changing_lineage_or_protocol(
+    database: Database,
+) -> None:
+    original_id = database.create_cage(
+        cage_card_id="DETAILS-ORIGINAL",
+        room="ROOM-REGULAR",
+        protocol="HIDDEN-PROTOCOL",
+        note="old note",
+        on_census_date="2026-01-01",
+        animal_count=1,
+    )
+    database.create_cage(cage_card_id="DETAILS-TAKEN")
+    before = database.get_cage(original_id)
+    assert before is not None
+
+    updated = database.update_cage(
+        original_id,
+        cage_card_id="DETAILS-REVISED",
+        room="ROOM-REVERSE",
+        note="new note",
+        on_census_date="2026-02-03",
+        off_census_date="2026-04-05",
+        is_breeding_pair=True,
+    )
+
+    assert updated["cage_card_id"] == "DETAILS-REVISED"
+    assert updated["room"] == "ROOM-REVERSE"
+    assert updated["note"] == "new note"
+    assert updated["on_census_date"] == "2026-02-03"
+    assert updated["off_census_date"] == "2026-04-05"
+    assert updated["is_breeding_pair"] is True
+    assert updated["protocol"] == "HIDDEN-PROTOCOL"
+    assert updated["family_letter"] == before["family_letter"]
+    assert updated["source_cage_id"] == before["source_cage_id"]
+
+    with pytest.raises(ValueError, match="already exists"):
+        database.update_cage(original_id, cage_card_id="details-taken")
+    with pytest.raises(ValueError, match="On census date must be a valid date"):
+        database.update_cage(original_id, on_census_date="not-a-date")
+    with pytest.raises(ValueError, match="Off census date cannot be earlier"):
+        database.update_cage(original_id, on_census_date="2026-05-01")
+    with pytest.raises(ValueError, match="Room must be 100 characters or fewer"):
+        database.update_cage(original_id, room="R" * 101)
+    with pytest.raises(ValueError, match="Note must be 4000 characters or fewer"):
+        database.update_cage(original_id, note="N" * 4001)
+
+    cleared = database.update_cage(
+        original_id,
+        cage_card_id="details-revised",
+        room=None,
+        note=None,
+        on_census_date=None,
+        off_census_date=None,
+        is_breeding_pair=False,
+    )
+    assert cleared["cage_card_id"] == "details-revised"
+    assert cleared["room"] is None
+    assert cleared["note"] is None
+    assert cleared["on_census_date"] is None
+    assert cleared["off_census_date"] is None
+    assert cleared["is_breeding_pair"] is False
+
+
+def test_protocol_is_not_searchable(database: Database) -> None:
+    database.create_cage(
+        cage_card_id="PROTOCOL-HIDDEN",
+        protocol="PRIVATE-SEARCH-TOKEN",
+    )
+
+    assert database.list_cages(search="PRIVATE-SEARCH-TOKEN") == []
+
+
 def test_initialize_migrates_existing_breeding_core_cages(tmp_path: Path) -> None:
     path = tmp_path / "legacy.db"
     old_schema = SCHEMA.replace(

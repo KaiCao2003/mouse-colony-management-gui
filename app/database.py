@@ -258,6 +258,25 @@ class Database:
         stripped = value.strip()
         return stripped or None
 
+    @classmethod
+    def _validate_cage_card_id(cls, value: str | None) -> str | None:
+        identifier = cls._clean(value)
+        if identifier is not None and len(identifier) > 100:
+            raise ValueError("Cage card ID must be 100 characters or fewer.")
+        return identifier
+
+    @classmethod
+    def _validate_optional_text(
+        cls,
+        value: str | None,
+        field: str,
+        max_length: int,
+    ) -> str | None:
+        cleaned = cls._clean(value)
+        if cleaned is not None and len(cleaned) > max_length:
+            raise ValueError(f"{field} must be {max_length} characters or fewer.")
+        return cleaned
+
     def _is_breeding_room(self, room: str | None) -> bool:
         cleaned = self._clean(room)
         return cleaned is not None and cleaned.casefold() in self._breeding_rooms
@@ -414,10 +433,13 @@ class Database:
         validated_off = self._validate_date(off_census_date, "Off census date")
         if not isinstance(is_breeding_pair, bool):
             raise ValueError("Breeding-pair flag must be true or false.")
-        cleaned_room = self._clean(room)
+        cleaned_room = self._validate_optional_text(room, "Room", 100)
+        cleaned_note = self._validate_optional_text(note, "Note", 4000)
         breeding_pair = is_breeding_pair or self._is_breeding_room(cleaned_room)
         with self.transaction() as connection:
-            identifier = self._clean(cage_card_id) or self._next_cage_card_id(connection)
+            identifier = self._validate_cage_card_id(cage_card_id) or self._next_cage_card_id(
+                connection
+            )
             letter = family_letter or self._allocate_letter(connection)
             letter = letter.strip().upper()
             if len(letter) != 1 or letter not in string.ascii_uppercase:
@@ -438,7 +460,7 @@ class Database:
                         cleaned_room,
                         int(breeding_pair),
                         self._clean(protocol),
-                        self._clean(note),
+                        cleaned_note,
                         source_cage_id,
                         creation_type,
                         validated_on,
@@ -511,7 +533,6 @@ class Database:
         animal_ids: Sequence[int],
         cage_card_id: str | None = None,
         room: str | None = None,
-        protocol: str | None = None,
         note: str | None = None,
     ) -> int:
         selected = list(dict.fromkeys(animal_ids))
@@ -534,8 +555,15 @@ class Database:
             ).fetchall()
             if len(rows) != len(selected):
                 raise ValueError("Every selected mouse must be active in the source cage.")
-            identifier = self._clean(cage_card_id) or self._next_cage_card_id(connection)
-            destination_room = self._clean(room) if room is not None else source["room"]
+            identifier = self._validate_cage_card_id(cage_card_id) or self._next_cage_card_id(
+                connection
+            )
+            destination_room = (
+                self._validate_optional_text(room, "Room", 100)
+                if room is not None
+                else source["room"]
+            )
+            destination_note = self._validate_optional_text(note, "Note", 4000)
             try:
                 cursor = connection.execute(
                     """
@@ -550,8 +578,8 @@ class Database:
                         source["family_letter"],
                         destination_room,
                         int(self._is_breeding_room(destination_room)),
-                        self._clean(protocol) if protocol is not None else source["protocol"],
-                        self._clean(note),
+                        source["protocol"],
+                        destination_note,
                         source_cage_id,
                     ),
                 )
@@ -596,7 +624,6 @@ class Database:
         genotype: str | None,
         cage_card_id: str | None = None,
         room: str | None = None,
-        protocol: str | None = None,
         note: str | None = None,
     ) -> int:
         source = self.get_cage(source_cage_id)
@@ -610,7 +637,7 @@ class Database:
             dob=dob,
             genotype=genotype,
             room=room if room is not None else source.get("room"),
-            protocol=protocol if protocol is not None else source.get("protocol"),
+            protocol=source.get("protocol"),
             note=note,
             source_cage_id=source_cage_id,
             creation_type="wean",
@@ -720,9 +747,11 @@ class Database:
         self,
         cage_id: int,
         *,
+        cage_card_id: str | object = _UNSET,
         room: str | None | object = _UNSET,
-        protocol: str | None | object = _UNSET,
         note: str | None | object = _UNSET,
+        on_census_date: str | None | object = _UNSET,
+        off_census_date: str | None | object = _UNSET,
         is_breeding_pair: bool | object = _UNSET,
     ) -> dict[str, Any]:
         with self.transaction() as connection:
@@ -731,11 +760,55 @@ class Database:
                 raise ValueError("Cage not found.")
             assignments: list[str] = []
             values: list[Any] = []
-            for column, value in (("room", room), ("protocol", protocol), ("note", note)):
+            if cage_card_id is not _UNSET:
+                identifier = self._validate_cage_card_id(
+                    cage_card_id if isinstance(cage_card_id, str) else None
+                )
+                if not identifier:
+                    raise ValueError("Cage card ID is required.")
+                duplicate = connection.execute(
+                    "SELECT id FROM cages WHERE cage_card_id = ? COLLATE NOCASE",
+                    (identifier,),
+                ).fetchone()
+                if duplicate is not None and int(duplicate["id"]) != cage_id:
+                    raise ValueError(f"Cage card ID {identifier} already exists.")
+                assignments.append("cage_card_id = ?")
+                values.append(identifier)
+            for column, value, label, max_length in (
+                ("room", room, "Room", 100),
+                ("note", note, "Note", 4000),
+            ):
                 if value is _UNSET:
                     continue
                 assignments.append(f"{column} = ?")
-                values.append(self._clean(value if isinstance(value, str) else None))
+                values.append(
+                    self._validate_optional_text(
+                        value if isinstance(value, str) else None,
+                        label,
+                        max_length,
+                    )
+                )
+            resulting_dates = {
+                "on_census_date": cage["on_census_date"],
+                "off_census_date": cage["off_census_date"],
+            }
+            for column, value, label in (
+                ("on_census_date", on_census_date, "On census date"),
+                ("off_census_date", off_census_date, "Off census date"),
+            ):
+                if value is _UNSET:
+                    continue
+                validated_date = self._validate_date(
+                    value if isinstance(value, str) else None,
+                    label,
+                )
+                assignments.append(f"{column} = ?")
+                values.append(validated_date)
+                resulting_dates[column] = validated_date
+            resulting_on = resulting_dates["on_census_date"]
+            resulting_off = resulting_dates["off_census_date"]
+            if resulting_on and resulting_off and resulting_off < resulting_on:
+                raise ValueError("Off census date cannot be earlier than on census date.")
 
             resulting_room = (
                 self._clean(room if isinstance(room, str) else None)
@@ -1181,8 +1254,7 @@ class Database:
         if search:
             clauses.append(
                 """(
-                    c.cage_card_id LIKE ? OR c.room LIKE ? OR c.protocol LIKE ?
-                    OR c.note LIKE ? OR EXISTS (
+                    c.cage_card_id LIKE ? OR c.room LIKE ? OR c.note LIKE ? OR EXISTS (
                         SELECT 1 FROM animals a WHERE a.cage_id = c.id AND (
                             a.public_id LIKE ? OR a.legacy_id LIKE ? OR a.genotype LIKE ?
                         )
@@ -1190,7 +1262,7 @@ class Database:
                 )"""
             )
             pattern = f"%{search}%"
-            values.extend([pattern] * 7)
+            values.extend([pattern] * 6)
         if tag:
             clauses.append(
                 """EXISTS (

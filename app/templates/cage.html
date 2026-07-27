@@ -52,9 +52,12 @@
             <summary>Edit cage details</summary>
             <form class="stack-form edit-cage-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/update" data-return-hash="#cage-details">
               <div class="form-grid">
-                <label class="field"><span>Room</span><input type="text" name="room" value="{{ cage.room or '' }}" autocomplete="off"></label>
+                <label class="field"><span>Cage card ID</span><input type="text" name="cage_card_id" value="{{ cage.cage_card_id }}" maxlength="100" autocomplete="off" required></label>
+                <label class="field"><span>Room</span><input type="text" name="room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
                 <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"{% if cage.is_breeding_pair %} checked{% endif %}><span><strong>Breeding pair</strong><small>Configured breeding rooms are automatic; enables litter weaning</small></span></label>
-                <label class="field field--full"><span>Note</span><textarea name="note" rows="3">{{ cage.note or '' }}</textarea></label>
+                <label class="field"><span>On census date</span><input type="date" name="on_census_date" value="{{ cage.on_census_date or '' }}"></label>
+                <label class="field"><span>Off census date</span><input type="date" name="off_census_date" value="{{ cage.off_census_date or '' }}"></label>
+                <label class="field field--full"><span>Note</span><textarea name="note" rows="3" maxlength="4000">{{ cage.note or '' }}</textarea></label>
               </div>
               <div class="form-actions"><button class="button button--primary" type="submit" data-pending-label="Saving…">Save cage details</button></div>
             </form>
@@ -97,9 +100,9 @@
             <form id="split-form" class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/split" data-return-hash="#cage-actions">
               <p class="form-help">First select mice in the list below, then enter the destination.</p>
               <div class="form-grid">
-                <label class="field"><span>New cage card ID <small>optional</small></span><input type="text" name="destination_cage_card_id" autocomplete="off"></label>
-                <label class="field"><span>Room</span><input type="text" name="destination_room" value="{{ cage.room or '' }}" autocomplete="off"></label>
-                <label class="field field--full"><span>Note</span><textarea name="destination_note" rows="2"></textarea></label>
+                <label class="field"><span>New cage card ID <small>optional</small></span><input type="text" name="destination_cage_card_id" maxlength="100" autocomplete="off"></label>
+                <label class="field"><span>Room</span><input type="text" name="destination_room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
+                <label class="field field--full"><span>Note</span><textarea name="destination_note" rows="2" maxlength="4000"></textarea></label>
               </div>
               <div class="form-actions form-actions--spread"><span class="selection-count" data-selection-count role="status" aria-live="polite" aria-atomic="true">0 mice selected</span><button class="button button--primary" type="submit" data-pending-label="Moving…">Create cage and move</button></div>
             </form>
@@ -114,9 +117,9 @@
                 <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
                 <label class="field"><span>Date of birth</span><input type="date" name="dob" required></label>
                 <label class="field"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
-                <label class="field"><span>New cage card ID <small>optional</small></span><input type="text" name="destination_cage_card_id" autocomplete="off"></label>
-                <label class="field"><span>Room</span><input type="text" name="destination_room" value="{{ cage.room or '' }}" autocomplete="off"></label>
-                <label class="field field--full"><span>Note</span><textarea name="destination_note" rows="2"></textarea></label>
+                <label class="field"><span>New cage card ID <small>optional</small></span><input type="text" name="destination_cage_card_id" maxlength="100" autocomplete="off"></label>
+                <label class="field"><span>Room</span><input type="text" name="destination_room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
+                <label class="field field--full"><span>Note</span><textarea name="destination_note" rows="2" maxlength="4000"></textarea></label>
               </div>
               <p class="form-help">Individual mouse IDs are generated automatically.</p>
               <div class="form-actions"><button class="button button--primary" type="submit" data-pending-label="Creating…">Create weaned cage</button></div>
