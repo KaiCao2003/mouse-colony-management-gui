@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
     <script src="{{ url_for('static', path='app.js') }}" defer></script>
   </head>
-  <body>
+  <body class="cage-page">
     <a class="skip-link" href="#main-content">Skip to cage details</a>
     <header class="site-header">
       <div class="shell site-header__inner">
@@ -36,56 +36,56 @@
       {% if message %}<div class="notice notice--{{ message_kind or 'success' }}" role="status">{{ message }}</div>{% endif %}
       <div class="client-notice" data-client-notice role="alert" hidden></div>
 
-      <section id="cage-details" class="detail-grid" aria-label="Cage information">
-        <article class="panel info-panel">
-          <div class="section-heading section-heading--compact"><div><h2>Cage details</h2></div></div>
-          {% if cage.source_cage_id %}<p class="lineage-note"><span>Origin</span><a href="{{ base_path }}/cages/{{ cage.source_cage_id }}">{% if cage.creation_type == 'wean' %}Weaned from{% else %}Separated from{% endif %} {{ cage.source_cage_card_id or ('cage ' ~ cage.source_cage_id) }}</a></p>{% endif %}
+      <section id="cage-details" class="panel overview-panel" aria-label="Cage information">
+        <div class="section-heading section-heading--compact">
+          <div>
+            <h2>Cage details</h2>
+            {% if cage.source_cage_id %}<p class="lineage-note"><span>Origin</span><a href="{{ base_path }}/cages/{{ cage.source_cage_id }}">{% if cage.creation_type == 'wean' %}Weaned from{% else %}Separated from{% endif %} {{ cage.source_cage_card_id or ('cage ' ~ cage.source_cage_id) }}</a></p>{% endif %}
+          </div>
+        </div>
+        <div class="overview-grid">
           <div class="cage-edit">
             <form class="stack-form edit-cage-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/update" data-return-hash="#cage-details">
-              <div class="form-grid">
-                <label class="field"><span>Cage card ID</span><input type="text" name="cage_card_id" value="{{ cage.cage_card_id or '' }}" maxlength="100" autocomplete="off" required></label>
-                <label class="field"><span>Room{% if cage.room_alias %} <small>· {{ cage.room_alias }}</small>{% endif %}</span><input type="text" name="room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
-                <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"{% if cage.is_breeding_pair %} checked{% endif %}><span><strong>Breeding pair</strong></span></label>
+              <div class="form-grid form-grid--cage">
+                <label class="field field--span-2"><span>Cage card ID</span><input type="text" name="cage_card_id" value="{{ cage.cage_card_id or '' }}" maxlength="100" autocomplete="off" required></label>
+                <label class="field field--span-2"><span>Room{% if cage.room_alias %} <small>· {{ cage.room_alias }}</small>{% endif %}</span><input type="text" name="room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
+                <label class="check-field field--span-2"><input type="checkbox" name="is_breeding_pair" value="true"{% if cage.is_breeding_pair %} checked{% endif %}><span><strong>Breeding pair</strong></span></label>
                 <label class="field"><span>On census date</span><input type="date" name="on_census_date" value="{{ cage.on_census_date or '' }}"></label>
                 <label class="field"><span>Off census date</span><input type="date" name="off_census_date" value="{{ cage.off_census_date or '' }}"></label>
-                <label class="field field--full"><span>Note</span><textarea name="note" rows="3" maxlength="4000">{{ cage.note or '' }}</textarea></label>
+                <label class="field field--span-3 field--single-line-note"><span>Note</span><textarea name="note" rows="1" maxlength="4000">{{ cage.note or '' }}</textarea></label>
+                <button class="button button--primary cage-save" type="submit" data-pending-label="Saving…">Save cage</button>
               </div>
-              <div class="form-actions"><button class="button button--primary" type="submit" data-pending-label="Saving…">Save cage details</button></div>
             </form>
           </div>
-        </article>
 
-        <article class="panel info-panel">
-          <div class="section-heading section-heading--compact"><div><h2>Tags</h2></div></div>
-          <div class="tag-list tag-list--roomy">
-            {% for tag in cage.tags %}
-              <div class="tag tag--removable">{{ tag.name if tag.name is defined else tag }}{% if tag.id is defined %}<form method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags/{{ tag.id }}/remove" data-return-hash="#cage-details"><button type="submit" aria-label="Remove tag {{ tag.name }}" title="Remove tag">×</button></form>{% endif %}</div>
-            {% else %}<span class="muted">No tags yet.</span>{% endfor %}
-          </div>
-          <form class="inline-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags" data-return-hash="#cage-details">
-            <label class="field field--grow"><span>Add tag</span><input name="tag_name" list="shared-tags" autocomplete="off" required><datalist id="shared-tags">{% for tag in all_tags %}<option value="{{ tag.name if tag.name is defined else tag }}"></option>{% endfor %}</datalist></label>
-            <button class="button" type="submit" data-pending-label="Adding…">Add</button>
-          </form>
-        </article>
+          <aside class="tag-rail" aria-labelledby="tags-title">
+            <h3 id="tags-title">Tags</h3>
+            <div class="tag-list tag-list--roomy">
+              {% for tag in cage.tags %}
+                <div class="tag tag--removable">{{ tag.name if tag.name is defined else tag }}{% if tag.id is defined %}<form method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags/{{ tag.id }}/remove" data-return-hash="#cage-details"><button type="submit" aria-label="Remove tag {{ tag.name }}" title="Remove tag">×</button></form>{% endif %}</div>
+              {% else %}<span class="muted">No tags</span>{% endfor %}
+            </div>
+            <form class="inline-form tag-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags" data-return-hash="#cage-details">
+              <label class="field field--grow"><span>Add tag</span><input name="tag_name" list="shared-tags" autocomplete="off" required><datalist id="shared-tags">{% for tag in all_tags %}<option value="{{ tag.name if tag.name is defined else tag }}"></option>{% endfor %}</datalist></label>
+              <button class="button button--small" type="submit" data-pending-label="Adding…">Add</button>
+            </form>
+          </aside>
+        </div>
       </section>
 
       <section id="cage-actions" class="panel action-panel" aria-labelledby="cage-actions-title">
-        <div class="section-heading"><div><h2 id="cage-actions-title">Add or move mice</h2></div></div>
+        <div class="section-heading section-heading--compact"><div><h2 id="cage-actions-title">Add mice</h2></div></div>
+        <form class="action-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/add-mice" data-return-hash="#cage-actions">
+          <div class="action-form-grid">
+            <label class="field"><span>Number</span><input type="number" name="count" min="1" max="100" step="1" value="1" required></label>
+            <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
+            <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
+            <label class="field"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
+            <label class="field action-note field--single-line-note"><span>Note</span><textarea name="note" rows="1"></textarea></label>
+            <button class="button button--primary" type="submit" data-pending-label="Adding…">Add mice</button>
+          </div>
+        </form>
         <div class="disclosure-grid">
-          <section class="direct-action" aria-labelledby="add-mice-title">
-            <h3 id="add-mice-title" class="direct-action__title">Add mice</h3>
-            <form class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/add-mice" data-return-hash="#cage-actions">
-              <div class="form-grid form-grid--four">
-                <label class="field"><span>Number</span><input type="number" name="count" min="1" max="100" step="1" value="1" required></label>
-                <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
-                <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
-                <label class="field"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
-                <label class="field field--full"><span>Note</span><textarea name="note" rows="2"></textarea></label>
-              </div>
-              <div class="form-actions"><button class="button button--primary" type="submit" data-pending-label="Adding…">Add mice</button></div>
-            </form>
-          </section>
-
           <details class="disclosure">
             <summary><span>Split cage</span></summary>
             <form id="split-form" class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/split" data-return-hash="#cage-actions">
@@ -129,56 +129,57 @@
                   <label class="select-animal" title="Select for cage split"><input class="animal-selector" type="checkbox" name="animal_ids" value="{{ animal.id }}" form="split-form"{% if animal_status != 'active' %} disabled{% endif %}><span class="sr-only">Select {{ animal.public_id }} for split</span></label>
                   <div class="animal-identity"><strong>{{ animal.public_id }}</strong><span class="animal-age">Age <span data-birth-date="{{ animal.dob or '' }}">{{ animal.age_display or 'Unknown' }}</span></span></div>
                   <span class="status status--{{ animal_status | lower | replace('_', '-') }}">{{ animal_status | title }}</span>
+                  <form class="animal-status-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/toggle" data-return-hash="#mouse-{{ animal.id }}"><button class="button button--small button--quiet" type="submit" {% if animal_status == 'active' %}data-confirm="Remove {{ animal.public_id }}? Its history will remain available."{% endif %} data-pending-label="Saving…">{% if animal_status == 'active' %}Remove mouse{% else %}Restore mouse{% endif %}</button></form>
                 </header>
 
+                <section class="animal-edit" aria-labelledby="edit-mouse-{{ animal.id }}">
+                  <h3 id="edit-mouse-{{ animal.id }}" class="sr-only">Mouse details</h3>
+                  <form class="edit-animal-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/update" data-return-hash="#mouse-{{ animal.id }}">
+                    <div class="mouse-detail-grid">
+                      <label class="field"><span>Previous mouse ID</span><input type="text" name="legacy_id" value="{{ animal.legacy_id or '' }}" maxlength="100" autocomplete="off"></label>
+                      <label class="field"><span>Sex</span><select name="sex"><option value="U"{% if not animal.sex or animal.sex == 'U' %} selected{% endif %}>Unknown</option><option value="F"{% if animal.sex == 'F' %} selected{% endif %}>♀ Female</option><option value="M"{% if animal.sex == 'M' %} selected{% endif %}>♂ Male</option></select></label>
+                      <label class="field"><span>Date of birth</span><input type="date" name="dob" value="{{ animal.dob or '' }}"></label>
+                      <label class="field"><span>Genotype</span><input type="text" name="genotype" value="{{ animal.genotype or '' }}" autocomplete="off"></label>
+                      <label class="field field--single-line-note"><span>Note</span><textarea name="note" rows="1">{{ animal.note or '' }}</textarea></label>
+                      <button class="button button--primary button--small" type="submit" data-pending-label="Saving…">Save mouse</button>
+                    </div>
+                  </form>
+                </section>
+
                 <section class="surgery-block" aria-labelledby="surgery-{{ animal.id }}">
-                  <div class="surgery-block__heading"><div><h3 id="surgery-{{ animal.id }}">Surgery</h3><p>{{ animal.surgeries | length }} of 4 records</p></div></div>
+                  <div class="surgery-block__heading"><h3 id="surgery-{{ animal.id }}">Surgery</h3><span class="surgery-count">{{ animal.surgeries | length }} / 4</span></div>
                   <datalist id="operators-{{ animal.id }}">{% for operator in operators %}<option value="{{ operator.name if operator.name is defined else operator }}"></option>{% endfor %}</datalist>
                   <datalist id="surgery-types-{{ animal.id }}">{% for surgery_type in surgery_types %}<option value="{{ surgery_type.name if surgery_type.name is defined else surgery_type }}"></option>{% endfor %}</datalist>
                   {% if animal.surgeries %}
-                    <div class="surgery-list">
-                      {% for surgery in animal.surgeries %}
-                        <form class="surgery-row surgery-row--editable" method="post" action="{{ base_path }}/surgeries/{{ surgery.id }}/update" data-return-hash="#mouse-{{ animal.id }}" aria-label="Edit surgery from {{ surgery.surgery_date or surgery.date }}">
-                          <label class="field"><span>Type</span><input name="surgery_type" list="surgery-types-{{ animal.id }}" value="{{ surgery.surgery_type or surgery.type or '' }}" autocomplete="off" required></label>
-                          <label class="field"><span>Date</span><input type="date" name="surgery_date" value="{{ surgery.surgery_date or surgery.date or '' }}" required></label>
-                          <label class="field"><span>Time</span><input type="time" name="surgery_time" value="{{ surgery.surgery_time or surgery.time or '' }}"></label>
-                          <label class="field"><span>Operator</span><input name="operator" list="operators-{{ animal.id }}" value="{{ surgery.operator or '' }}" autocomplete="off" required></label>
-                          <button class="button button--small" type="submit" data-pending-label="Saving…">Save</button>
-                        </form>
-                      {% endfor %}
+                    <div class="surgery-table">
+                      <div class="surgery-table__head" aria-hidden="true"><span>Type</span><span>Date</span><span>Time</span><span>Operator</span><span></span></div>
+                      <div class="surgery-list">
+                        {% for surgery in animal.surgeries %}
+                          <form class="surgery-row surgery-row--editable" method="post" action="{{ base_path }}/surgeries/{{ surgery.id }}/update" data-return-hash="#mouse-{{ animal.id }}" aria-label="Edit surgery from {{ surgery.surgery_date or surgery.date }}">
+                            <label class="field"><span class="surgery-field-label">Type</span><input name="surgery_type" list="surgery-types-{{ animal.id }}" value="{{ surgery.surgery_type or surgery.type or '' }}" autocomplete="off" required></label>
+                            <label class="field"><span class="surgery-field-label">Date</span><input type="date" name="surgery_date" value="{{ surgery.surgery_date or surgery.date or '' }}" required></label>
+                            <label class="field"><span class="surgery-field-label">Time</span><input type="time" name="surgery_time" value="{{ surgery.surgery_time or surgery.time or '' }}"></label>
+                            <label class="field"><span class="surgery-field-label">Operator</span><input name="operator" list="operators-{{ animal.id }}" value="{{ surgery.operator or '' }}" autocomplete="off" required></label>
+                            <button class="button button--small" type="submit" aria-label="Save surgery from {{ surgery.surgery_date or surgery.date }}" data-pending-label="Saving…">Save</button>
+                          </form>
+                        {% endfor %}
+                      </div>
                     </div>
-                  {% else %}<p class="compact-empty">No surgery recorded.</p>{% endif %}
+                  {% else %}<p class="compact-empty">No surgery recorded</p>{% endif %}
 
                   {% if animal.surgeries | length < 4 %}
                     <details class="mini-disclosure">
                       <summary>Add surgery</summary>
                       <form class="surgery-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/surgery" data-return-hash="#mouse-{{ animal.id }}">
+                        <label class="field"><span>Type</span><input name="surgery_type" list="surgery-types-{{ animal.id }}" autocomplete="off" required></label>
                         <label class="field"><span>Date</span><input type="date" name="surgery_date" required></label>
                         <label class="field"><span>Time</span><input type="time" name="surgery_time"></label>
                         <label class="field"><span>Operator</span><input name="operator" list="operators-{{ animal.id }}" autocomplete="off" required></label>
-                        <label class="field"><span>Type</span><input name="surgery_type" list="surgery-types-{{ animal.id }}" autocomplete="off" required></label>
-                        <button class="button button--primary" type="submit" data-pending-label="Saving…">Save surgery</button>
+                        <button class="button button--primary button--small" type="submit" data-pending-label="Saving…">Save surgery</button>
                       </form>
                     </details>
-                  {% else %}<p class="limit-note">Maximum 4 surgery records reached.</p>{% endif %}
+                  {% else %}<p class="limit-note">Maximum 4 surgery records reached</p>{% endif %}
                 </section>
-
-                <footer class="animal-card__footer">
-                  <section class="animal-edit" aria-labelledby="edit-mouse-{{ animal.id }}">
-                    <h3 id="edit-mouse-{{ animal.id }}" class="edit-section-title">Mouse details</h3>
-                    <form class="stack-form edit-animal-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/update" data-return-hash="#mouse-{{ animal.id }}">
-                      <div class="form-grid form-grid--four">
-                        <label class="field"><span>Previous mouse ID</span><input type="text" name="legacy_id" value="{{ animal.legacy_id or '' }}" maxlength="100" autocomplete="off"></label>
-                        <label class="field"><span>Sex</span><select name="sex"><option value="U"{% if not animal.sex or animal.sex == 'U' %} selected{% endif %}>Unknown</option><option value="F"{% if animal.sex == 'F' %} selected{% endif %}>♀ Female</option><option value="M"{% if animal.sex == 'M' %} selected{% endif %}>♂ Male</option></select></label>
-                        <label class="field"><span>Date of birth</span><input type="date" name="dob" value="{{ animal.dob or '' }}"></label>
-                        <label class="field"><span>Genotype</span><input type="text" name="genotype" value="{{ animal.genotype or '' }}" autocomplete="off"></label>
-                        <label class="field field--full"><span>Note</span><textarea name="note" rows="2">{{ animal.note or '' }}</textarea></label>
-                      </div>
-                      <div class="form-actions"><button class="button button--primary" type="submit" data-pending-label="Saving…">Save changes</button></div>
-                    </form>
-                  </section>
-                  <form class="animal-status-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/toggle" data-return-hash="#mouse-{{ animal.id }}"><button class="button button--small button--quiet" type="submit" {% if animal_status == 'active' %}data-confirm="Remove {{ animal.public_id }}? Its history will remain available."{% endif %} data-pending-label="Saving…">{% if animal_status == 'active' %}Remove mouse{% else %}Restore mouse{% endif %}</button></form>
-                </footer>
               </article>
             {% endfor %}
           </div>
