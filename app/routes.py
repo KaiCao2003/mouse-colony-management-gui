@@ -13,6 +13,12 @@ from app.security import csrf_token_for_request
 
 router = APIRouter()
 
+_BATCH_ANIMAL_FIELD_LABELS = {
+    "sex": "sex",
+    "genotype": "genotype",
+    "dob": "date of birth",
+}
+
 
 def _db(request: Request) -> Database:
     return request.app.state.database
@@ -34,10 +40,14 @@ def _redirect(
     *,
     kind: str = "success",
 ) -> RedirectResponse:
-    separator = "&" if "?" in path else "?"
+    path_without_fragment, hash_marker, fragment = path.partition("#")
+    separator = "&" if "?" in path_without_fragment else "?"
     query = urlencode({"message": message, "kind": kind})
+    location = f"{_app_path(request, path_without_fragment)}{separator}{query}"
+    if hash_marker:
+        location = f"{location}#{fragment}"
     return RedirectResponse(
-        f"{_app_path(request, path)}{separator}{query}",
+        location,
         status_code=303,
     )
 
@@ -315,6 +325,47 @@ def update_cage(
     except ValueError as exc:
         return _redirect(request, f"/cages/{cage_id}", str(exc), kind="error")
     return _redirect(request, f"/cages/{cage_id}", "Cage details updated.")
+
+
+@router.post("/cages/{cage_id}/animals/batch-update")
+def batch_update_cage_animals(
+    cage_id: int,
+    request: Request,
+    field: Annotated[str, Form()],
+    value: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    normalized_field = field.strip().casefold()
+    field_label = _BATCH_ANIMAL_FIELD_LABELS.get(normalized_field)
+    if field_label is None:
+        return _redirect(
+            request,
+            f"/cages/{cage_id}#mice",
+            "Choose sex, genotype, or date of birth.",
+            kind="error",
+        )
+
+    cleaned_value = _clean(value)
+    try:
+        updated_count = _db(request).batch_update_animals(
+            cage_id,
+            field=normalized_field,
+            value=cleaned_value,
+        )
+    except ValueError as exc:
+        return _redirect(
+            request,
+            f"/cages/{cage_id}#mice",
+            str(exc),
+            kind="error",
+        )
+
+    mouse_label = "mouse" if updated_count == 1 else "mice"
+    action = "Cleared" if cleaned_value is None else "Updated"
+    return _redirect(
+        request,
+        f"/cages/{cage_id}#mice",
+        f"{action} {field_label} for {updated_count} {mouse_label}.",
+    )
 
 
 @router.post("/cages/{cage_id}/tags")

@@ -890,6 +890,42 @@ class Database:
         assert result is not None
         return result
 
+    def batch_update_animals(
+        self,
+        cage_id: int,
+        *,
+        field: str,
+        value: str | None,
+    ) -> int:
+        validated_value: str | None
+        if field == "sex":
+            if value is None:
+                raise ValueError("Sex must be M, F, or U.")
+            validated_value = self._validate_sex(value)
+        elif field == "genotype":
+            validated_value = self._clean(value)
+        elif field == "dob":
+            validated_value = self._validate_date(value, "DOB")
+        else:
+            raise ValueError("Mouse field must be sex, genotype, or dob.")
+
+        with self.transaction() as connection:
+            cage = connection.execute(
+                "SELECT 1 FROM cages WHERE id = ?",
+                (cage_id,),
+            ).fetchone()
+            if cage is None:
+                raise ValueError("Cage not found.")
+            cursor = connection.execute(
+                f"""
+                UPDATE animals
+                SET {field} = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE cage_id = ?
+                """,
+                (validated_value, cage_id),
+            )
+            return int(cursor.rowcount)
+
     def toggle_animal(self, animal_id: int) -> dict[str, Any]:
         with self.transaction() as connection:
             animal = connection.execute(

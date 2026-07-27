@@ -482,6 +482,54 @@ def test_add_remove_and_restore_mouse_updates_active_count(tmp_path: Path) -> No
     assert after_restore is not None and after_restore["active_count"] == 3
 
 
+def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(
+            cage_card_id="BATCH-ROUTE",
+            animal_count=3,
+            sex="M",
+            genotype="Original",
+        )
+        inactive_id = int(database.list_animals(cage_id)[0]["id"])
+        database.toggle_animal(inactive_id)
+        headers = _csrf(client)
+
+        response = client.post(
+            f"/cages/{cage_id}/animals/batch-update",
+            headers=headers,
+            data={"field": "genotype", "value": "  WT  "},
+            follow_redirects=False,
+        )
+        updated = database.list_animals(cage_id, include_inactive=True)
+        invalid = client.post(
+            f"/cages/{cage_id}/animals/batch-update",
+            headers=headers,
+            data={"field": "note", "value": "not allowed"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    response_location = urlsplit(response.headers["location"])
+    assert response_location.path == f"/cages/{cage_id}"
+    assert response_location.fragment == "mice"
+    assert parse_qs(response_location.query)["message"] == [
+        "Updated genotype for 3 mice."
+    ]
+    assert {animal["genotype"] for animal in updated} == {"WT"}
+    assert {animal["status"] for animal in updated} == {"active", "inactive"}
+
+    assert invalid.status_code == 303
+    invalid_location = urlsplit(invalid.headers["location"])
+    assert invalid_location.fragment == "mice"
+    assert parse_qs(invalid_location.query)["kind"] == ["error"]
+    assert parse_qs(invalid_location.query)["message"] == [
+        "Choose sex, genotype, or date of birth."
+    ]
+
+
 def test_update_surgery_route_persists_fields_and_keeps_record_count(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         database = client.app.state.database
@@ -584,6 +632,14 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         f"/cages/{cage_id}/wean",
     ):
         assert 'data-return-hash="#cage-actions"' in _form_tag(html, action)
+
+    batch_action = f"/cages/{cage_id}/animals/batch-update"
+    batch_forms = re.findall(
+        rf'<form\b[^>]*action="{re.escape(batch_action)}"[^>]*>',
+        html,
+    )
+    assert len(batch_forms) == 3
+    assert all('data-return-hash="#mice"' in form for form in batch_forms)
 
     for action in (
         f"/animals/{animal['id']}/surgery",

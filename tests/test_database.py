@@ -325,6 +325,91 @@ def test_active_home_cages_use_every_letter_before_reusing(database: Database) -
     assert letters[26] == "A"
 
 
+def test_batch_update_animals_changes_one_field_for_active_and_inactive_mice(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="BATCH-TARGET",
+        animal_count=3,
+        sex="M",
+        dob="2026-01-02",
+        genotype="Original",
+    )
+    target_animals = database.list_animals(cage_id)
+    inactive_id = int(target_animals[0]["id"])
+    database.toggle_animal(inactive_id)
+    other_cage_id = database.create_cage(
+        cage_card_id="BATCH-OTHER",
+        animal_count=1,
+        sex="M",
+        dob="2025-12-31",
+        genotype="Other",
+    )
+    other_animal_id = int(database.list_animals(other_cage_id)[0]["id"])
+    database.connection.execute(
+        "UPDATE animals SET updated_at = '2000-01-01 00:00:00' WHERE cage_id = ?",
+        (cage_id,),
+    )
+
+    assert database.batch_update_animals(cage_id, field="sex", value=" f ") == 3
+    after_sex = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["sex"] for animal in after_sex} == {"F"}
+    assert {animal["dob"] for animal in after_sex} == {"2026-01-02"}
+    assert {animal["genotype"] for animal in after_sex} == {"Original"}
+    assert {animal["status"] for animal in after_sex} == {"active", "inactive"}
+    assert all(animal["updated_at"] != "2000-01-01 00:00:00" for animal in after_sex)
+
+    assert (
+        database.batch_update_animals(
+            cage_id,
+            field="genotype",
+            value=" Batch Het ",
+        )
+        == 3
+    )
+    after_genotype = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["genotype"] for animal in after_genotype} == {"Batch Het"}
+    assert {animal["sex"] for animal in after_genotype} == {"F"}
+
+    assert database.batch_update_animals(cage_id, field="dob", value=None) == 3
+    after_dob = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["dob"] for animal in after_dob} == {None}
+    assert {animal["genotype"] for animal in after_dob} == {"Batch Het"}
+    other_animal = database.get_animal(other_animal_id)
+    assert other_animal is not None
+    assert other_animal["sex"] == "M"
+    assert other_animal["dob"] == "2025-12-31"
+    assert other_animal["genotype"] == "Other"
+
+
+def test_batch_update_animals_validates_cage_field_and_value(database: Database) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="BATCH-VALIDATION",
+        animal_count=1,
+        sex="M",
+        dob="2026-02-03",
+        genotype="Keep",
+    )
+    empty_cage_id = database.create_cage(cage_card_id="BATCH-EMPTY")
+
+    assert database.batch_update_animals(empty_cage_id, field="genotype", value="WT") == 0
+    with pytest.raises(ValueError, match="Cage not found"):
+        database.batch_update_animals(999_999, field="genotype", value="WT")
+    with pytest.raises(ValueError, match="Mouse field must be sex, genotype, or dob"):
+        database.batch_update_animals(cage_id, field="note", value="not allowed")
+    with pytest.raises(ValueError, match="Sex must be M, F, or U"):
+        database.batch_update_animals(cage_id, field="sex", value="X")
+    with pytest.raises(ValueError, match="Sex must be M, F, or U"):
+        database.batch_update_animals(cage_id, field="sex", value=None)
+    with pytest.raises(ValueError, match="DOB must be a valid date"):
+        database.batch_update_animals(cage_id, field="dob", value="not-a-date")
+
+    animal = database.list_animals(cage_id)[0]
+    assert animal["sex"] == "M"
+    assert animal["dob"] == "2026-02-03"
+    assert animal["genotype"] == "Keep"
+
+
 def test_active_split_cage_keeps_family_letter_reserved(database: Database) -> None:
     source_id = database.create_cage(cage_card_id="ROOT-A", animal_count=2)
     original_letter = database.get_cage(source_id)["family_letter"]  # type: ignore[index]

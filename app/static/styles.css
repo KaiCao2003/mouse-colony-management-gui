@@ -1005,6 +1005,71 @@ a.tag:hover {
   font-weight: 700;
 }
 
+.batch-edit {
+  border-top: 1px solid var(--border);
+  background: #fbfbfc;
+}
+
+.batch-edit > summary {
+  width: max-content;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 5px 14px;
+  color: var(--purple-700);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.batch-edit > summary::-webkit-details-marker {
+  display: none;
+}
+
+.batch-edit > summary::before {
+  content: "+";
+}
+
+.batch-edit[open] > summary::before {
+  content: "−";
+}
+
+.batch-edit__forms {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+
+.batch-edit__form {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.batch-edit__form:first-child {
+  padding-left: 0;
+}
+
+.batch-edit__form:last-child {
+  padding-right: 0;
+}
+
+.batch-edit__form + .batch-edit__form {
+  border-left: 1px solid var(--border);
+}
+
+.batch-edit__form > .button {
+  white-space: nowrap;
+}
+
 .animal-list {
   display: grid;
   gap: 0;

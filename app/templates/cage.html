@@ -121,6 +121,26 @@
       <section id="mice" class="panel animals-panel" aria-labelledby="animals-title">
         <div class="section-heading"><div><h2 id="animals-title">Mice</h2><p>{{ animals | length }} total</p></div></div>
         {% if animals %}
+          <details class="batch-edit">
+            <summary>Batch edit all mice</summary>
+            <div class="batch-edit__forms">
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change sex for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+                <input type="hidden" name="field" value="sex">
+                <label class="field"><span>Sex</span><select name="value" required><option value="" selected disabled>Select…</option><option value="F">♀ Female</option><option value="M">♂ Male</option><option value="U">Unknown</option></select></label>
+                <button class="button button--small" type="submit" aria-label="Apply sex to all mice" data-pending-label="Updating…">Apply</button>
+              </form>
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change genotype for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+                <input type="hidden" name="field" value="genotype">
+                <label class="field"><span>Genotype</span><input type="text" name="value" autocomplete="off" required></label>
+                <button class="button button--small" type="submit" aria-label="Apply genotype to all mice" data-pending-label="Updating…">Apply</button>
+              </form>
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change date of birth for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+                <input type="hidden" name="field" value="dob">
+                <label class="field"><span>Date of birth</span><input type="date" name="value" required></label>
+                <button class="button button--small" type="submit" aria-label="Apply date of birth to all mice" data-pending-label="Updating…">Apply</button>
+              </form>
+            </div>
+          </details>
           <div class="animal-list">
             {% for animal in animals %}
               {% set animal_status = animal.status or 'active' %}
