@@ -570,6 +570,63 @@ def test_surgery_is_simple_shared_and_limited_to_four(database: Database) -> Non
     assert "Custom type" in {item["name"] for item in database.list_surgery_types()}
 
 
+def test_existing_surgery_can_be_updated_without_using_another_record(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(cage_card_id="SURGERY-EDIT", animal_count=1)
+    animal_id = int(database.list_animals(cage_id)[0]["id"])
+    surgery_ids: list[int] = []
+    for index in range(4):
+        surgery_id = database.add_surgery(
+            animal_id,
+            surgery_date=f"2026-05-{index + 1:02d}",
+            surgery_time="09:15",
+            operator="Original Operator",
+            surgery_type="Headplate",
+        )
+        assert surgery_id is not None
+        surgery_ids.append(surgery_id)
+
+    updated = database.update_surgery(
+        surgery_ids[0],
+        surgery_date="2026-06-07",
+        surgery_time="14:05",
+        operator=" Revised Operator ",
+        surgery_type=" Probe implant ",
+    )
+    animal = database.get_animal(animal_id)
+
+    assert updated == {
+        "id": surgery_ids[0],
+        "animal_id": animal_id,
+        "cage_id": cage_id,
+        "surgery_date": "2026-06-07",
+        "surgery_time": "14:05",
+        "operator": "Revised Operator",
+        "surgery_type": "Probe implant",
+    }
+    assert animal is not None
+    assert len(animal["surgeries"]) == 4
+    assert {surgery["id"] for surgery in animal["surgeries"]} == set(surgery_ids)
+
+    with pytest.raises(ValueError, match="Surgery record not found"):
+        database.update_surgery(
+            999999,
+            surgery_date="2026-06-08",
+            surgery_time=None,
+            operator="Operator",
+            surgery_type="Headplate",
+        )
+    with pytest.raises(ValueError, match="Surgery date is required"):
+        database.update_surgery(
+            surgery_ids[0],
+            surgery_date="",
+            surgery_time=None,
+            operator="Operator",
+            surgery_type="Headplate",
+        )
+
+
 def test_tags_are_shared_and_filter_cages(database: Database) -> None:
     first = database.create_cage(cage_card_id="CC00000008")
     database.create_cage(cage_card_id="CC00000009")

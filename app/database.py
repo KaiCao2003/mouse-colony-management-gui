@@ -1063,6 +1063,81 @@ class Database:
                 raise
             return self._lastrowid(cursor)
 
+    def get_surgery(self, surgery_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT s.id, s.animal_id, a.cage_id,
+                       s.surgery_date, s.surgery_time,
+                       o.name AS operator, t.name AS surgery_type
+                FROM surgeries s
+                JOIN animals a ON a.id = s.animal_id
+                JOIN operators o ON o.id = s.operator_id
+                JOIN surgery_types t ON t.id = s.surgery_type_id
+                WHERE s.id = ?
+                """,
+                (surgery_id,),
+            ).fetchone()
+            return None if row is None else dict(row)
+
+    def update_surgery(
+        self,
+        surgery_id: int,
+        *,
+        surgery_date: str,
+        surgery_time: str | None,
+        operator: str,
+        surgery_type: str,
+    ) -> dict[str, Any]:
+        validated_date = self._validate_date(surgery_date, "Surgery date")
+        if validated_date is None:
+            raise ValueError("Surgery date is required.")
+        validated_time = self._validate_time(surgery_time)
+        operator_name = self._clean(operator)
+        type_name = self._clean(surgery_type)
+        if not operator_name:
+            raise ValueError("Operator is required.")
+        if not type_name:
+            raise ValueError("Surgery type is required.")
+        with self.transaction() as connection:
+            surgery = connection.execute(
+                "SELECT animal_id FROM surgeries WHERE id = ?",
+                (surgery_id,),
+            ).fetchone()
+            if surgery is None:
+                raise ValueError("Surgery record not found.")
+            operator_id = self._lookup_id(connection, "operators", operator_name)
+            type_id = self._lookup_id(connection, "surgery_types", type_name)
+            duplicate = connection.execute(
+                """
+                SELECT id FROM surgeries
+                WHERE animal_id = ? AND id != ? AND surgery_date = ?
+                  AND COALESCE(surgery_time, '') = COALESCE(?, '')
+                  AND operator_id = ? AND surgery_type_id = ?
+                """,
+                (
+                    surgery["animal_id"],
+                    surgery_id,
+                    validated_date,
+                    validated_time,
+                    operator_id,
+                    type_id,
+                ),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("This mouse already has an identical surgery record.")
+            connection.execute(
+                """
+                UPDATE surgeries
+                SET surgery_date = ?, surgery_time = ?, operator_id = ?, surgery_type_id = ?
+                WHERE id = ?
+                """,
+                (validated_date, validated_time, operator_id, type_id, surgery_id),
+            )
+        result = self.get_surgery(surgery_id)
+        assert result is not None
+        return result
+
     def list_operators(self) -> list[dict[str, Any]]:
         with self._lock:
             return [

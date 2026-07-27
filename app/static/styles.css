@@ -630,6 +630,14 @@ a.tag:hover {
   background: var(--purple-50);
 }
 
+.cage-table tbody tr[data-cage-row-href] {
+  cursor: pointer;
+}
+
+.cage-table tbody tr[data-cage-row-href]:focus-within {
+  background: var(--purple-50);
+}
+
 .data-table td > span:not(.status, .tag, .cage-kind),
 .data-table td > a + span {
   display: block;
@@ -711,10 +719,6 @@ a.tag:hover {
 .room-name {
   color: var(--ink);
   font-weight: 700;
-}
-
-.detail-secondary {
-  display: block;
 }
 
 .status--active {
@@ -808,8 +812,7 @@ a.tag:hover {
 }
 
 .check-field span,
-.check-field strong,
-.check-field small {
+.check-field strong {
   display: block;
 }
 
@@ -818,25 +821,12 @@ a.tag:hover {
   font-size: 12px;
 }
 
-.check-field small {
-  margin-top: 1px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
 .form-actions {
   justify-content: flex-end;
 }
 
 .form-actions--spread {
   justify-content: space-between;
-}
-
-.site-footer {
-  padding: 18px 0 26px;
-  border-top: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .back-link {
@@ -863,52 +853,37 @@ a.tag:hover {
   gap: 12px;
 }
 
-.definition-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
-  padding: 0 22px 20px;
-}
-
-.definition-grid > div {
-  min-width: 0;
-  padding: 12px 12px 12px 0;
-  border-top: 1px solid #ebe8ec;
-}
-
-.definition-grid__wide {
-  grid-column: 1 / -1;
-}
-
-.definition-grid dt,
-.animal-facts dt {
+.lineage-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 0 22px 16px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
 }
 
-.definition-grid dd {
-  margin-top: 3px;
-  overflow-wrap: anywhere;
+.lineage-note span {
+  font-weight: 700;
 }
 
 .cage-edit {
-  margin: 0 22px 20px;
+  padding: 16px 22px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.edit-section-title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .edit-cage-form {
-  margin-top: 11px;
-  padding-top: 15px;
-  border-top: 1px solid var(--border);
+  margin-top: 0;
 }
 
 .info-panel > .inline-form {
   padding: 15px 22px 20px;
   border-top: 1px solid var(--border);
-}
-
-.preserve-lines {
-  white-space: pre-wrap;
 }
 
 .disclosure-grid {
@@ -918,6 +893,19 @@ a.tag:hover {
 .disclosure {
   min-width: 0;
   border-top: 1px solid var(--border);
+}
+
+.direct-action {
+  border-top: 1px solid var(--border);
+}
+
+.direct-action__title {
+  min-height: 54px;
+  display: grid;
+  align-content: center;
+  padding: 10px 20px;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .disclosure[open] {
@@ -959,20 +947,10 @@ a.tag:hover {
   font-weight: 600;
 }
 
-.disclosure > summary small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .disclosure__body {
   padding: 18px 20px 20px;
   border-top: 1px solid var(--border);
   background: var(--surface-soft);
-}
-
-.form-help {
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .selection-count {
@@ -1031,8 +1009,8 @@ a.tag:hover {
   accent-color: var(--purple-700);
 }
 
-.animal-identity strong,
-.animal-identity span {
+.animal-identity > strong,
+.animal-identity > span {
   display: block;
 }
 
@@ -1043,32 +1021,17 @@ a.tag:hover {
   font-variant-numeric: tabular-nums;
 }
 
-.animal-identity span {
+.animal-identity > span {
   margin-top: 1px;
   color: var(--muted);
   font-size: 11px;
 }
 
-.animal-facts {
-  display: grid;
-  grid-template-columns: 0.7fr 1fr 0.9fr 1.5fr;
-  padding: 0 15px;
-}
-
-.animal-facts > div {
-  min-width: 0;
-  padding: 13px 12px 13px 0;
-}
-
-.animal-facts dd {
-  margin-top: 3px;
-  color: var(--ink-soft);
-  overflow-wrap: anywhere;
-}
-
-.animal-facts__note {
-  grid-column: 1 / -1;
-  border-top: 1px solid #ebe8ec;
+.animal-age [data-birth-date] {
+  display: inline;
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
 }
 
 .surgery-block {
@@ -1087,21 +1050,23 @@ a.tag:hover {
 }
 
 .surgery-list {
+  grid-column: 2;
   display: grid;
 }
 
 .surgery-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) minmax(150px, 1fr) minmax(100px, 0.7fr);
-  gap: 12px;
-  padding: 8px 0;
+  grid-template-columns: repeat(4, minmax(110px, 1fr)) auto;
+  align-items: end;
+  gap: 9px;
+  padding: 12px 0;
   border-top: 1px solid var(--border);
   color: var(--ink-soft);
   font-size: 12px;
 }
 
-.surgery-row strong {
-  color: var(--ink);
+.surgery-row .button {
+  margin-bottom: 1px;
 }
 
 .compact-empty {
@@ -1152,23 +1117,24 @@ a.tag:hover {
 }
 
 .animal-card__footer {
-  min-height: 49px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
   gap: 14px;
-  padding: 8px 15px;
+  padding: 15px;
   border-top: 1px solid var(--border);
 }
 
-.mini-disclosure--edit {
-  flex: 1 1 auto;
-  margin: 0;
+.animal-edit {
+  min-width: 0;
 }
 
 .edit-animal-form {
-  margin: 12px 0 5px;
-  padding-top: 14px;
+  margin-top: 11px;
+}
+
+.animal-status-form {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
 }
 
@@ -1282,16 +1248,12 @@ a.tag:hover {
   }
 
   .form-panel > .stack-form,
-  .definition-grid,
   .tag-list--roomy,
-  .info-panel > .inline-form {
+  .info-panel > .inline-form,
+  .cage-edit,
+  .lineage-note {
     padding-right: 15px;
     padding-left: 15px;
-  }
-
-  .cage-edit {
-    margin-right: 15px;
-    margin-left: 15px;
   }
 
   .disclosure-grid {
@@ -1302,14 +1264,11 @@ a.tag:hover {
     grid-column: auto;
   }
 
-  .animal-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .surgery-block {
     grid-template-columns: 1fr;
   }
 
+  .surgery-list,
   .mini-disclosure,
   .limit-note {
     grid-column: 1;
@@ -1319,8 +1278,9 @@ a.tag:hover {
     grid-template-columns: 1fr 1fr;
   }
 
-  .surgery-row strong {
+  .surgery-row .button {
     grid-column: 1 / -1;
+    justify-self: end;
   }
 
   .cage-table {
@@ -1373,14 +1333,6 @@ a.tag:hover {
     flex: 1 1 0;
   }
 
-  .definition-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .definition-grid__wide {
-    grid-column: auto;
-  }
-
   .form-actions,
   .form-actions--spread {
     align-items: stretch;
@@ -1405,28 +1357,16 @@ a.tag:hover {
     justify-self: start;
   }
 
-  .animal-facts {
-    grid-template-columns: 1fr 1fr;
-  }
-
   .surgery-row {
     grid-template-columns: 1fr;
-  }
-
-  .surgery-row strong {
-    grid-column: auto;
   }
 
   .surgery-form .button {
     width: 100%;
   }
 
-  .animal-card__footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .animal-card__footer > form .button {
+  .surgery-row .button,
+  .animal-status-form .button {
     width: 100%;
   }
 }
@@ -1474,7 +1414,6 @@ a.tag:hover {
 
 @media print {
   .site-header,
-  .site-footer,
   .button,
   .action-panel,
   .animal-card__footer,

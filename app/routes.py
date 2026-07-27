@@ -340,6 +340,7 @@ def remove_cage_tag(cage_id: int, tag_id: int, request: Request) -> RedirectResp
 def update_animal(
     animal_id: int,
     request: Request,
+    legacy_id: Annotated[str, Form()] = "",
     sex: Annotated[str, Form()] = "U",
     dob: Annotated[str, Form()] = "",
     genotype: Annotated[str, Form()] = "",
@@ -352,6 +353,7 @@ def update_animal(
     try:
         database.update_animal(
             animal_id,
+            legacy_id=_clean(legacy_id),
             sex=_sex(sex),
             dob=_clean(dob),
             genotype=_clean(genotype),
@@ -417,4 +419,45 @@ def add_surgery(
         request,
         f"/cages/{animal['cage_id']}",
         "Surgery recorded.",
+    )
+
+
+@router.post("/surgeries/{surgery_id}/update")
+def update_surgery(
+    surgery_id: int,
+    request: Request,
+    surgery_date: Annotated[str, Form()],
+    surgery_time: Annotated[str, Form()] = "",
+    operator: Annotated[str, Form()] = "",
+    surgery_type: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    database = _db(request)
+    surgery = database.get_surgery(surgery_id)
+    if surgery is None:
+        raise HTTPException(status_code=404, detail="Surgery record not found.")
+    animal = database.get_animal(int(surgery["animal_id"]))
+    if animal is None or int(animal["cage_id"]) != int(surgery["cage_id"]):
+        raise HTTPException(status_code=404, detail="Mouse not found.")
+    cage_id = int(animal["cage_id"])
+    if database.get_cage(cage_id) is None:
+        raise HTTPException(status_code=404, detail="Cage not found.")
+    try:
+        database.update_surgery(
+            surgery_id,
+            surgery_date=surgery_date,
+            surgery_time=_clean(surgery_time),
+            operator=operator,
+            surgery_type=surgery_type,
+        )
+    except ValueError as exc:
+        return _redirect(
+            request,
+            f"/cages/{cage_id}",
+            str(exc),
+            kind="error",
+        )
+    return _redirect(
+        request,
+        f"/cages/{cage_id}",
+        "Surgery details updated.",
     )

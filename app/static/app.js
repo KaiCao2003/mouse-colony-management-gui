@@ -83,6 +83,53 @@
     }
   }
 
+  const cageTable = document.querySelector(".cage-table");
+  const interactiveRowTarget = [
+    "a",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "label",
+    "summary",
+    "details",
+    "form",
+    '[role="button"]',
+    '[role="link"]',
+    '[contenteditable]:not([contenteditable="false"])',
+  ].join(", ");
+
+  cageTable?.addEventListener("click", (event) => {
+    if (
+      !(event instanceof MouseEvent) ||
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const row = target.closest("tr[data-cage-row-href]");
+    if (!(row instanceof HTMLTableRowElement) || !cageTable.contains(row)) return;
+    if (target.closest(interactiveRowTarget)) return;
+
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+
+    const href = row.dataset.cageRowHref;
+    if (!href) return;
+
+    const destination = new URL(href, window.location.href);
+    if (destination.origin !== window.location.origin) return;
+    window.location.assign(destination.href);
+  });
+
   function csrfToken() {
     return csrfMeta?.getAttribute("content") || "";
   }

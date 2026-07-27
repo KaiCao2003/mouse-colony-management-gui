@@ -51,6 +51,14 @@ def _form_tag(html: str, action: str) -> str:
     return match.group(0)
 
 
+def _assert_form_not_inside_details(html: str, action: str) -> None:
+    form_tag = _form_tag(html, action)
+    form_index = html.index(form_tag)
+    last_details_open = html.rfind("<details", 0, form_index)
+    last_details_close = html.rfind("</details>", 0, form_index)
+    assert last_details_open <= last_details_close, f"Form for {action} is hidden in details"
+
+
 def _cage_row(html: str, cage_id: int) -> str:
     for row in re.findall(r"<tr\b[^>]*>.*?</tr>", html, flags=re.DOTALL):
         if f'href="/cages/{cage_id}"' in row:
@@ -100,7 +108,7 @@ def test_root_and_health_are_available_without_login(tmp_path: Path) -> None:
         root = client.get("/")
         health = client.get("/healthz")
     assert root.status_code == 200
-    assert "No login required" in root.text
+    assert "Local data · No login required" not in root.text
     assert health.json()["status"] == "ok"
 
 
@@ -276,6 +284,18 @@ def test_root_hash_navigation_targets_and_filter_links(tmp_path: Path) -> None:
     assert 'href="/?status=active&amp;view=stock#cages"' in html
 
 
+def test_cage_rows_expose_full_row_navigation_target(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        cage_id = client.app.state.database.create_cage(cage_card_id="ROW-LINK")
+        response = client.get("/")
+
+    assert response.status_code == 200
+    row = _cage_row(response.text, cage_id)
+    cage_href = f"/cages/{cage_id}"
+    assert f'data-cage-row-href="{cage_href}"' in row
+    assert f'class="record-link" href="{cage_href}"' in row
+
+
 def test_stock_and_using_views_render_separately_with_sex_breakdown(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         database = client.app.state.database
@@ -383,6 +403,139 @@ def test_view_switcher_preserves_current_filters(tmp_path: Path) -> None:
         }
 
 
+def test_update_animal_persists_every_editable_detail(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(cage_card_id="EDIT-MOUSE", animal_count=1)
+        animal_id = int(database.list_animals(cage_id)[0]["id"])
+
+        response = client.post(
+            f"/animals/{animal_id}/update",
+            headers=_csrf(client),
+            data={
+                "legacy_id": "  Prior-007  ",
+                "sex": "F",
+                "dob": "2026-02-03",
+                "genotype": "  Cre+ / WT  ",
+                "note": "  monitor after weaning  ",
+            },
+            follow_redirects=False,
+        )
+        updated = database.get_animal(animal_id)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith(f"/cages/{cage_id}?")
+    assert updated is not None
+    assert updated["legacy_id"] == "Prior-007"
+    assert updated["sex"] == "F"
+    assert updated["dob"] == "2026-02-03"
+    assert updated["genotype"] == "Cre+ / WT"
+    assert updated["note"] == "monitor after weaning"
+
+
+def test_add_remove_and_restore_mouse_updates_active_count(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(cage_card_id="ADJUST-MICE", animal_count=1)
+        original_ids = {int(animal["id"]) for animal in database.list_animals(cage_id)}
+        headers = _csrf(client)
+
+        added_response = client.post(
+            f"/cages/{cage_id}/add-mice",
+            headers=headers,
+            data={
+                "count": "2",
+                "sex": "F",
+                "dob": "2026-05-06",
+                "genotype": "WT",
+                "note": "route test",
+            },
+            follow_redirects=False,
+        )
+        after_add = database.get_cage(cage_id)
+        added_animals = [
+            animal
+            for animal in database.list_animals(cage_id)
+            if int(animal["id"]) not in original_ids
+        ]
+        assert len(added_animals) == 2
+        removed_id = int(added_animals[0]["id"])
+
+        removed_response = client.post(
+            f"/animals/{removed_id}/toggle",
+            headers=headers,
+            follow_redirects=False,
+        )
+        after_remove = database.get_cage(cage_id)
+        restored_response = client.post(
+            f"/animals/{removed_id}/toggle",
+            headers=headers,
+            follow_redirects=False,
+        )
+        after_restore = database.get_cage(cage_id)
+
+    assert added_response.status_code == 303
+    assert removed_response.status_code == 303
+    assert restored_response.status_code == 303
+    assert after_add is not None and after_add["active_count"] == 3
+    assert after_remove is not None and after_remove["active_count"] == 2
+    assert after_restore is not None and after_restore["active_count"] == 3
+
+
+def test_update_surgery_route_persists_fields_and_keeps_record_count(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(cage_card_id="EDIT-SURGERY", animal_count=1)
+        animal_id = int(database.list_animals(cage_id)[0]["id"])
+        surgery_ids: list[int] = []
+        for index in range(4):
+            surgery_id = database.add_surgery(
+                animal_id,
+                surgery_date=f"2026-03-{index + 1:02d}",
+                surgery_time="08:00",
+                operator="Original Operator",
+                surgery_type="Headplate",
+            )
+            assert surgery_id is not None
+            surgery_ids.append(surgery_id)
+
+        response = client.post(
+            f"/surgeries/{surgery_ids[0]}/update",
+            headers=_csrf(client),
+            data={
+                "surgery_date": "2026-04-05",
+                "surgery_time": "13:45",
+                "operator": "  Revised Operator  ",
+                "surgery_type": "Probe implant",
+            },
+            follow_redirects=False,
+        )
+        updated = database.get_surgery(surgery_ids[0])
+        animal = database.get_animal(animal_id)
+        missing = client.post(
+            "/surgeries/999999/update",
+            headers=_csrf(client),
+            data={
+                "surgery_date": "2026-04-06",
+                "operator": "Nobody",
+                "surgery_type": "Headplate",
+            },
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith(f"/cages/{cage_id}?")
+    assert updated is not None
+    assert updated["animal_id"] == animal_id
+    assert updated["cage_id"] == cage_id
+    assert updated["surgery_date"] == "2026-04-05"
+    assert updated["surgery_time"] == "13:45"
+    assert updated["operator"] == "Revised Operator"
+    assert updated["surgery_type"] == "Probe implant"
+    assert animal is not None and len(animal["surgeries"]) == 4
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Surgery record not found."
+
+
 def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         database = client.app.state.database
@@ -395,6 +548,14 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         cage = database.get_cage(cage_id)
         assert cage is not None
         animal = database.list_animals(cage_id)[0]
+        surgery_id = database.add_surgery(
+            animal["id"],
+            surgery_date="2026-06-07",
+            surgery_time="10:30",
+            operator="Hash Operator",
+            surgery_type="Headplate",
+        )
+        assert surgery_id is not None
         tag_id = cage["tags"][0]["id"]
         response = client.get(f"/cages/{cage_id}")
 
@@ -428,5 +589,19 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         f"/animals/{animal['id']}/surgery",
         f"/animals/{animal['id']}/update",
         f"/animals/{animal['id']}/toggle",
+        f"/surgeries/{surgery_id}/update",
     ):
         assert f'data-return-hash="{mouse_hash}"' in _form_tag(html, action)
+
+    for action in (
+        f"/cages/{cage_id}/update",
+        f"/cages/{cage_id}/add-mice",
+        f"/animals/{animal['id']}/update",
+        f"/surgeries/{surgery_id}/update",
+    ):
+        _assert_form_not_inside_details(html, action)
+
+    assert 'name="legacy_id"' in html
+    assert "Remove mouse" in html
+    assert "Configured breeding rooms" not in html
+    assert "Local data · No login required" not in html

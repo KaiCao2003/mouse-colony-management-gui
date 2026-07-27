@@ -83,7 +83,7 @@
               <tbody>
                 {% for cage in cages %}
                   {% set cage_status = cage.status or 'active' %}
-                  <tr>
+                  <tr data-cage-row-href="{{ base_path }}/cages/{{ cage.id }}">
                     <td data-label="Cage"><a class="record-link" href="{{ base_path }}/cages/{{ cage.id }}">{{ cage.cage_card_id or ('Cage ' ~ cage.id) }}</a>{% if cage.is_breeding_pair %}<span class="subtle">Breeding pair</span>{% endif %}</td>
                     <td data-label="Mice"><strong class="numeric">{{ cage.active_count }}</strong>{% if cage.total_count is defined and cage.total_count != cage.active_count %}<span class="subtle">{{ cage.total_count }} total</span>{% endif %}</td>
                     <td data-label="Room">{% if cage.room_alias %}<strong class="room-name">{{ cage.room_alias }}</strong>{% elif cage.room %}<span>{{ cage.room }}</span>{% else %}<span class="muted">—</span>{% endif %}{% if cage.room_alias and cage.room and cage.room_alias != cage.room %}<span class="subtle">{{ cage.room }}</span>{% endif %}</td>
@@ -106,22 +106,21 @@
         <section class="page-heading" aria-labelledby="new-cage-page-title">
           <div>
             <h1 id="new-cage-page-title" data-workspace-heading tabindex="-1">Create cage</h1>
-            <p class="lede">Enter cage details and the starting mouse count.</p>
           </div>
           <a class="button button--quiet" href="#cages">Back to cages</a>
         </section>
         <section class="panel form-panel" aria-labelledby="new-cage-title">
-          <div class="section-heading"><div><h2 id="new-cage-title">Cage and mice</h2><p>Mouse IDs are generated automatically. Cage card ID can be added now or later.</p></div></div>
+          <div class="section-heading"><div><h2 id="new-cage-title">Cage and mice</h2></div></div>
           <form class="stack-form" method="post" action="{{ base_path }}/cages/new">
             <div class="form-grid form-grid--four">
-              <label class="field"><span>Cage card ID <small>optional</small></span><input type="text" name="cage_card_id" placeholder="e.g. 104236" maxlength="100" autocomplete="off"></label>
+              <label class="field"><span>Cage card ID <small>optional</small></span><input type="text" name="cage_card_id" maxlength="100" autocomplete="off"></label>
               <label class="field"><span>Number of mice</span><input type="number" name="count" min="0" max="100" step="1" value="0" required></label>
               <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
               <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
-              <label class="field field--wide"><span>Genotype</span><input type="text" name="genotype" placeholder="e.g. WT, Het, Flox/Flox" autocomplete="off"></label>
+              <label class="field field--wide"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
               <label class="field"><span>Room</span><input type="text" name="room" maxlength="100" autocomplete="off"></label>
-              <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"><span><strong>Breeding pair</strong><small>Configured breeding rooms are automatic; otherwise assign manually</small></span></label>
-              <label class="field field--full"><span>Note</span><textarea name="note" rows="2" maxlength="4000" placeholder="Anything useful for this cage"></textarea></label>
+              <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"><span><strong>Breeding pair</strong></span></label>
+              <label class="field field--full"><span>Note</span><textarea name="note" rows="2" maxlength="4000"></textarea></label>
             </div>
             <div class="form-actions"><button class="button button--primary" type="submit" data-pending-label="Creating…">Create cage</button></div>
           </form>
@@ -129,6 +128,5 @@
       </section>
     </main>
 
-    <footer class="site-footer"><div class="shell">Local data · No login required</div></footer>
   </body>
 </html>
