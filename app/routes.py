@@ -138,6 +138,36 @@ def _canonical_choice(value: str, choices: set[str], default: str) -> str:
     return candidate if candidate in choices else default
 
 
+def _cage_list_url(
+    request: Request,
+    *,
+    view: str,
+    search: str,
+    status: str,
+    tag: str,
+    mouse_user: str,
+    room: str,
+    sort: str,
+    direction: str,
+    sort_explicit: bool,
+) -> str:
+    query: dict[str, str] = {"view": view}
+    if cleaned_search := _clean(search):
+        query["search"] = cleaned_search
+    if status != "all":
+        query["status"] = status
+    if cleaned_tag := _clean(tag):
+        query["tag"] = cleaned_tag
+    if cleaned_mouse_user := _clean(mouse_user):
+        query["mouse_user"] = cleaned_mouse_user
+    if cleaned_room := _clean(room):
+        query["room"] = cleaned_room
+    if sort_explicit:
+        query["sort"] = sort
+        query["direction"] = direction
+    return _app_path(request, f"/?{urlencode(query)}#cages")
+
+
 def _cage_view_urls(
     request: Request,
     *,
@@ -148,29 +178,62 @@ def _cage_view_urls(
     room: str,
     sort: str,
     direction: str,
+    sort_explicit: bool,
 ) -> dict[str, str]:
-    shared: dict[str, str] = {}
-    if cleaned_search := _clean(search):
-        shared["search"] = cleaned_search
-    if status != "all":
-        shared["status"] = status
-    if cleaned_tag := _clean(tag):
-        shared["tag"] = cleaned_tag
-    if cleaned_mouse_user := _clean(mouse_user):
-        shared["mouse_user"] = cleaned_mouse_user
-    if cleaned_room := _clean(room):
-        shared["room"] = cleaned_room
-    if sort != "status":
-        shared["sort"] = sort
-    if direction != "asc":
-        shared["direction"] = direction
     return {
-        view_name: _app_path(
+        view_name: _cage_list_url(
             request,
-            f"/?{urlencode({'view': view_name, **shared})}#cages",
+            view=view_name,
+            search=search,
+            status=status,
+            tag=tag,
+            mouse_user=mouse_user,
+            room=room,
+            sort=sort,
+            direction=direction,
+            sort_explicit=sort_explicit,
         )
         for view_name in ("all", "stock", "using", "breeding")
     }
+
+
+def _cage_sort_urls(
+    request: Request,
+    *,
+    view: str,
+    search: str,
+    status: str,
+    tag: str,
+    mouse_user: str,
+    room: str,
+    sort: str,
+    direction: str,
+    sort_explicit: bool,
+) -> dict[str, str]:
+    urls: dict[str, str] = {}
+    for field in ("cage_card_id", "room", "status"):
+        next_sort = field
+        next_direction = "asc"
+        next_explicit = True
+        if sort_explicit and sort == field:
+            if direction == "asc":
+                next_direction = "desc"
+            else:
+                next_sort = "status"
+                next_explicit = False
+        urls[field] = _cage_list_url(
+            request,
+            view=view,
+            search=search,
+            status=status,
+            tag=tag,
+            mouse_user=mouse_user,
+            room=room,
+            sort=next_sort,
+            direction=next_direction,
+            sort_explicit=next_explicit,
+        )
+    return urls
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -190,8 +253,12 @@ def index(
     database = _db(request)
     canonical_view = "using" if view == "single" else view
     canonical_status = _canonical_choice(status, _CAGE_FILTER_STATUSES, "all")
-    canonical_sort = _canonical_choice(sort, _CAGE_SORT_FIELDS, "status")
-    canonical_direction = _canonical_choice(direction, _SORT_DIRECTIONS, "asc")
+    sort_candidate = sort.strip().casefold()
+    sort_explicit = "sort" in request.query_params and sort_candidate in _CAGE_SORT_FIELDS
+    canonical_sort = sort_candidate if sort_explicit else "status"
+    canonical_direction = (
+        _canonical_choice(direction, _SORT_DIRECTIONS, "asc") if sort_explicit else "asc"
+    )
     cleaned_mouse_user = _clean(mouse_user)
     cleaned_room = _clean(room)
     cages = database.list_cages(
@@ -213,6 +280,19 @@ def index(
         room=cleaned_room or "",
         sort=canonical_sort,
         direction=canonical_direction,
+        sort_explicit=sort_explicit,
+    )
+    sort_urls = _cage_sort_urls(
+        request,
+        view=canonical_view,
+        search=search,
+        status=canonical_status,
+        tag=tag,
+        mouse_user=cleaned_mouse_user or "",
+        room=cleaned_room or "",
+        sort=canonical_sort,
+        direction=canonical_direction,
+        sort_explicit=sort_explicit,
     )
     cage_return_to = view_urls[canonical_view]
     return request.app.state.templates.TemplateResponse(
@@ -234,9 +314,11 @@ def index(
                 "room": cleaned_room or "",
                 "sort": canonical_sort,
                 "direction": canonical_direction,
+                "sort_explicit": sort_explicit,
                 "view": canonical_view,
             },
             "view_urls": view_urls,
+            "sort_urls": sort_urls,
             "cage_detail_urls": {
                 cage["id"]: _app_path(
                     request,

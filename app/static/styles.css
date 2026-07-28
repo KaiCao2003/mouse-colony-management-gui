@@ -488,7 +488,7 @@ textarea:focus-visible {
 
 .filter-form {
   display: grid;
-  grid-template-columns: minmax(170px, 1.35fr) repeat(2, minmax(125px, 0.85fr)) minmax(110px, 0.7fr) minmax(125px, 0.8fr) minmax(130px, 0.8fr) minmax(105px, 0.65fr) auto;
+  grid-template-columns: minmax(190px, 1.45fr) repeat(2, minmax(135px, 0.85fr)) minmax(115px, 0.7fr) minmax(135px, 0.8fr) auto;
   align-items: end;
   gap: 8px;
   padding: 10px 12px 12px;
@@ -648,6 +648,34 @@ a.tag:hover {
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.sort-link {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -5px -6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sort-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.sort-link.is-active {
+  color: var(--purple-700);
+}
+
+.sort-indicator {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .data-table tbody tr:last-child td {

@@ -69,6 +69,19 @@ def _cage_row(html: str, cage_id: int) -> str:
     raise AssertionError(f"Missing table row for cage {cage_id}")
 
 
+def _sort_header(html: str, field: str) -> tuple[str, str]:
+    match = re.search(
+        rf'<th\b[^>]*data-sort-field="{re.escape(field)}"[^>]*>.*?</th>',
+        html,
+        flags=re.DOTALL,
+    )
+    assert match is not None, f"Missing sortable header for {field}"
+    header = match.group(0)
+    link = re.search(r'<a\b[^>]*href="([^"]+)"', header)
+    assert link is not None, f"Missing sort link for {field}"
+    return header, unescape(link.group(1))
+
+
 def test_create_cage_and_render_detail(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         response = client.post(
@@ -452,7 +465,7 @@ def test_stock_and_using_views_render_separately_with_sex_breakdown(tmp_path: Pa
     )
     assert stock_heading in stock_html
     assert "view-switcher__label" not in stock_html
-    assert '<th scope="col">Sex</th><th scope="col">Genotype</th>' in stock_html
+    assert re.search(r'<th scope="col">Sex</th>\s*<th scope="col">Genotype</th>', stock_html)
     assert 'aria-label="2 male mice"' in stock_row
     assert 'aria-label="1 female mouse"' in stock_row
     assert "Unknown 1" in stock_row
@@ -574,6 +587,103 @@ def test_index_filters_sorts_and_preserves_extended_query(tmp_path: Path) -> Non
     assert "FILTER-A" in invalid.text
     assert "FILTER-B" in invalid.text
     assert "FILTER-C" in invalid.text
+
+
+def test_sortable_headers_cycle_ascending_descending_then_default(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        database.create_cage(cage_card_id="C-THIRD", status="inactive", room="Room B")
+        database.create_cage(cage_card_id="A-FIRST", status="active", room="Room C")
+        database.create_cage(cage_card_id="B-SECOND", status="on_order", room="Room A")
+        database.create_cage(cage_card_id="D-NO-ROOM", status="active", room=None)
+        database.create_cage(cage_card_id="E-ROOM-B", status="active", room="Room B")
+
+        default_page = client.get("/?view=all")
+        assert default_page.status_code == 200
+        assert '<select name="sort">' not in default_page.text
+        assert '<select name="direction">' not in default_page.text
+        assert "Sort by" not in default_page.text
+
+        for field in ("cage_card_id", "room", "status"):
+            default_header, ascending_url = _sort_header(default_page.text, field)
+            assert "aria-sort=" not in default_header
+            assert parse_qs(urlsplit(ascending_url).query) == {
+                "view": ["all"],
+                "sort": [field],
+                "direction": ["asc"],
+            }
+
+            ascending_page = client.get(ascending_url)
+            ascending_header, descending_url = _sort_header(ascending_page.text, field)
+            assert 'aria-sort="ascending"' in ascending_header
+            assert "sort-link is-active" in ascending_header
+            assert parse_qs(urlsplit(descending_url).query) == {
+                "view": ["all"],
+                "sort": [field],
+                "direction": ["desc"],
+            }
+
+            descending_page = client.get(descending_url)
+            descending_header, default_url = _sort_header(descending_page.text, field)
+            assert 'aria-sort="descending"' in descending_header
+            assert parse_qs(urlsplit(default_url).query) == {"view": ["all"]}
+
+            restored_page = client.get(default_url)
+            restored_header, restored_ascending_url = _sort_header(restored_page.text, field)
+            assert "aria-sort=" not in restored_header
+            assert "sort-link is-active" not in restored_header
+            assert parse_qs(urlsplit(restored_ascending_url).query) == {
+                "view": ["all"],
+                "sort": [field],
+                "direction": ["asc"],
+            }
+
+        cage_ascending = client.get("/?view=all&sort=cage_card_id&direction=asc")
+        cage_descending = client.get("/?view=all&sort=cage_card_id&direction=desc")
+        identifiers = ["A-FIRST", "B-SECOND", "C-THIRD", "D-NO-ROOM", "E-ROOM-B"]
+        assert [cage_ascending.text.index(value) for value in identifiers] == sorted(
+            cage_ascending.text.index(value) for value in identifiers
+        )
+        assert [cage_descending.text.index(value) for value in reversed(identifiers)] == sorted(
+            cage_descending.text.index(value) for value in reversed(identifiers)
+        )
+
+
+def test_sort_headers_preserve_filters_and_explicit_sort_in_forms(tmp_path: Path) -> None:
+    params = {
+        "view": "stock",
+        "search": "Alpha & Beta",
+        "status": "active",
+        "tag": "Group & One",
+        "mouse_user": "Alice",
+        "room": "Room A",
+        "sort": "room",
+        "direction": "desc",
+    }
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(
+            cage_card_id="Alpha & Beta",
+            animal_count=2,
+            mouse_user="Alice",
+            room="Room A",
+        )
+        database.add_tag(cage_id, "Group & One")
+        response = client.get("/", params=params)
+
+    assert response.status_code == 200
+    assert '<input type="hidden" name="sort" value="room">' in response.text
+    assert '<input type="hidden" name="direction" value="desc">' in response.text
+    room_header, default_url = _sort_header(response.text, "room")
+    assert 'aria-sort="descending"' in room_header
+    assert parse_qs(urlsplit(default_url).query) == {
+        "view": ["stock"],
+        "search": ["Alpha & Beta"],
+        "status": ["active"],
+        "tag": ["Group & One"],
+        "mouse_user": ["Alice"],
+        "room": ["Room A"],
+    }
 
 
 def test_mouse_user_flows_through_create_add_update_batch_and_wean(tmp_path: Path) -> None:

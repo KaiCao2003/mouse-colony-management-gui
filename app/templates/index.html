@@ -51,6 +51,10 @@
         </nav>
         <form class="filter-form" method="get" action="{{ base_path }}/#cages">
           <input type="hidden" name="view" value="{{ filters.view or 'all' }}">
+          {% if filters.sort_explicit %}
+            <input type="hidden" name="sort" value="{{ filters.sort }}">
+            <input type="hidden" name="direction" value="{{ filters.direction }}">
+          {% endif %}
           <label class="field field--search"><span>Search</span><input type="search" name="search" value="{{ filters.search or '' }}" placeholder="Cage ID, mouse ID, genotype, user…" autocomplete="off"></label>
           <label class="field"><span>Mouse user</span><input type="search" name="mouse_user" list="mouse-user-options" value="{{ filters.mouse_user or '' }}" maxlength="100" autocomplete="off"></label>
           <label class="field"><span>Room</span><input type="search" name="room" list="room-options" value="{{ filters.room or '' }}" maxlength="100" autocomplete="off"></label>
@@ -73,21 +77,6 @@
               {% endfor %}
             </select>
           </label>
-          <label class="field">
-            <span>Sort by</span>
-            <select name="sort">
-              <option value="cage_card_id"{% if not filters.sort or filters.sort == 'cage_card_id' %} selected{% endif %}>Cage card ID</option>
-              <option value="room"{% if filters.sort == 'room' %} selected{% endif %}>Room</option>
-              <option value="status"{% if filters.sort == 'status' %} selected{% endif %}>Status</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Direction</span>
-            <select name="direction">
-              <option value="asc"{% if not filters.direction or filters.direction == 'asc' %} selected{% endif %}>Ascending</option>
-              <option value="desc"{% if filters.direction == 'desc' %} selected{% endif %}>Descending</option>
-            </select>
-          </label>
           <div class="filter-form__actions"><button class="button button--primary" type="submit">Apply</button><a class="button button--quiet" href="{{ base_path }}/#cages">Clear</a></div>
         </form>
       </section>
@@ -98,7 +87,36 @@
           <div class="table-scroll" tabindex="0" role="region" aria-label="Cage list">
             <table class="data-table cage-table">
               <caption class="sr-only">Cages matching the current filters</caption>
-              <thead><tr><th scope="col">Cage</th><th scope="col">Mice</th><th scope="col">Mouse users</th><th scope="col">Room</th><th scope="col">Sex</th><th scope="col">Genotype</th><th scope="col">Tags</th><th scope="col">Status</th></tr></thead>
+              <thead>
+                <tr>
+                  {% set cage_sort_active = filters.sort_explicit and filters.sort == 'cage_card_id' %}
+                  {% set room_sort_active = filters.sort_explicit and filters.sort == 'room' %}
+                  {% set status_sort_active = filters.sort_explicit and filters.sort == 'status' %}
+                  <th scope="col" data-sort-field="cage_card_id"{% if cage_sort_active %} aria-sort="{% if filters.direction == 'desc' %}descending{% else %}ascending{% endif %}"{% endif %}>
+                    <a class="sort-link{% if cage_sort_active %} is-active{% endif %}" href="{{ sort_urls.cage_card_id }}">
+                      <span>Cage</span>{% if cage_sort_active %}<span class="sort-indicator" aria-hidden="true">{% if filters.direction == 'desc' %}↓{% else %}↑{% endif %}</span>{% endif %}
+                      <span class="sr-only">{% if cage_sort_active and filters.direction == 'asc' %}, sorted ascending; activate for descending{% elif cage_sort_active %}, sorted descending; activate to clear sorting{% else %}; activate for ascending{% endif %}</span>
+                    </a>
+                  </th>
+                  <th scope="col">Mice</th>
+                  <th scope="col">Mouse users</th>
+                  <th scope="col" data-sort-field="room"{% if room_sort_active %} aria-sort="{% if filters.direction == 'desc' %}descending{% else %}ascending{% endif %}"{% endif %}>
+                    <a class="sort-link{% if room_sort_active %} is-active{% endif %}" href="{{ sort_urls.room }}">
+                      <span>Room</span>{% if room_sort_active %}<span class="sort-indicator" aria-hidden="true">{% if filters.direction == 'desc' %}↓{% else %}↑{% endif %}</span>{% endif %}
+                      <span class="sr-only">{% if room_sort_active and filters.direction == 'asc' %}, sorted ascending; activate for descending{% elif room_sort_active %}, sorted descending; activate to clear sorting{% else %}; activate for ascending{% endif %}</span>
+                    </a>
+                  </th>
+                  <th scope="col">Sex</th>
+                  <th scope="col">Genotype</th>
+                  <th scope="col">Tags</th>
+                  <th scope="col" data-sort-field="status"{% if status_sort_active %} aria-sort="{% if filters.direction == 'desc' %}descending{% else %}ascending{% endif %}"{% endif %}>
+                    <a class="sort-link{% if status_sort_active %} is-active{% endif %}" href="{{ sort_urls.status }}">
+                      <span>Status</span>{% if status_sort_active %}<span class="sort-indicator" aria-hidden="true">{% if filters.direction == 'desc' %}↓{% else %}↑{% endif %}</span>{% endif %}
+                      <span class="sr-only">{% if status_sort_active and filters.direction == 'asc' %}, sorted ascending; activate for descending{% elif status_sort_active %}, sorted descending; activate to clear sorting{% else %}; activate for ascending{% endif %}</span>
+                    </a>
+                  </th>
+                </tr>
+              </thead>
               <tbody>
                 {% for cage in cages %}
                   {% set cage_status = cage.status or 'active' %}
