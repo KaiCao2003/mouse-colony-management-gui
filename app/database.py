@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS animals (
     sex TEXT NOT NULL DEFAULT 'U' CHECK(sex IN ('M', 'F', 'U')),
     dob TEXT,
     genotype TEXT,
+    mouse_user TEXT,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
     inactive_by_cage INTEGER NOT NULL DEFAULT 0 CHECK(inactive_by_cage IN (0, 1)),
     note TEXT,
@@ -192,6 +193,14 @@ class Database:
                     CHECK(inactive_by_cage IN (0, 1))
                     """
                 )
+            if "mouse_user" not in animal_columns:
+                connection.execute("ALTER TABLE animals ADD COLUMN mouse_user TEXT")
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS animals_mouse_user_idx
+                ON animals(mouse_user COLLATE NOCASE)
+                """
+            )
             for name in ("Headplate", "Probe implant", "Headplate + probe implant"):
                 connection.execute(
                     "INSERT OR IGNORE INTO surgery_types(name) VALUES (?)",
@@ -369,6 +378,7 @@ class Database:
         sex: str,
         dob: str | None,
         genotype: str | None,
+        mouse_user: str | None,
         status: str,
         note: str | None,
         legacy_id: str | None = None,
@@ -379,8 +389,8 @@ class Database:
             """
             INSERT INTO animals(
                 public_id, legacy_id, cage_id, family_letter, sex, dob,
-                genotype, status, note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                genotype, mouse_user, status, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 public_id,
@@ -390,6 +400,7 @@ class Database:
                 sex,
                 dob,
                 self._clean(genotype),
+                mouse_user,
                 status,
                 self._clean(note),
             ),
@@ -413,6 +424,7 @@ class Database:
         sex: str = "U",
         dob: str | None = None,
         genotype: str | None = None,
+        mouse_user: str | None = None,
         room: str | None = None,
         protocol: str | None = None,
         note: str | None = None,
@@ -435,6 +447,7 @@ class Database:
             raise ValueError("Breeding-pair flag must be true or false.")
         cleaned_room = self._validate_optional_text(room, "Room", 100)
         cleaned_note = self._validate_optional_text(note, "Note", 4000)
+        cleaned_mouse_user = self._validate_optional_text(mouse_user, "Mouse user", 100)
         breeding_pair = is_breeding_pair or self._is_breeding_room(cleaned_room)
         with self.transaction() as connection:
             identifier = self._validate_cage_card_id(cage_card_id) or self._next_cage_card_id(
@@ -479,6 +492,7 @@ class Database:
                     sex=validated_sex,
                     dob=validated_dob,
                     genotype=genotype,
+                    mouse_user=cleaned_mouse_user,
                     status=animal_status,
                     note=None,
                     movement_type=creation_type,
@@ -493,12 +507,14 @@ class Database:
         sex: str = "U",
         dob: str | None = None,
         genotype: str | None = None,
+        mouse_user: str | None = None,
         note: str | None = None,
     ) -> list[dict[str, Any]]:
         if count < 1 or count > 100:
             raise ValueError("Number of mice must be between 1 and 100.")
         validated_sex = self._validate_sex(sex)
         validated_dob = self._validate_date(dob, "DOB")
+        cleaned_mouse_user = self._validate_optional_text(mouse_user, "Mouse user", 100)
         created: list[int] = []
         with self.transaction() as connection:
             cage = connection.execute("SELECT * FROM cages WHERE id = ?", (cage_id,)).fetchone()
@@ -515,6 +531,7 @@ class Database:
                         sex=validated_sex,
                         dob=validated_dob,
                         genotype=genotype,
+                        mouse_user=cleaned_mouse_user,
                         status="active",
                         note=note,
                     )
@@ -622,6 +639,7 @@ class Database:
         sex: str,
         dob: str | None,
         genotype: str | None,
+        mouse_user: str | None = None,
         cage_card_id: str | None = None,
         room: str | None = None,
         note: str | None = None,
@@ -636,6 +654,7 @@ class Database:
             sex=sex,
             dob=dob,
             genotype=genotype,
+            mouse_user=mouse_user,
             room=room if room is not None else source.get("room"),
             protocol=source.get("protocol"),
             note=note,
@@ -849,6 +868,7 @@ class Database:
         sex: str | object = _UNSET,
         dob: str | None | object = _UNSET,
         genotype: str | None | object = _UNSET,
+        mouse_user: str | None | object = _UNSET,
         note: str | None | object = _UNSET,
     ) -> dict[str, Any]:
         assignments: list[str] = []
@@ -867,6 +887,15 @@ class Database:
         if genotype is not _UNSET:
             assignments.append("genotype = ?")
             values.append(self._clean(genotype if isinstance(genotype, str) else None))
+        if mouse_user is not _UNSET:
+            assignments.append("mouse_user = ?")
+            values.append(
+                self._validate_optional_text(
+                    mouse_user if isinstance(mouse_user, str) else None,
+                    "Mouse user",
+                    100,
+                )
+            )
         if note is not _UNSET:
             assignments.append("note = ?")
             values.append(self._clean(note if isinstance(note, str) else None))
@@ -906,8 +935,10 @@ class Database:
             validated_value = self._clean(value)
         elif field == "dob":
             validated_value = self._validate_date(value, "DOB")
+        elif field == "mouse_user":
+            validated_value = self._validate_optional_text(value, "Mouse user", 100)
         else:
-            raise ValueError("Mouse field must be sex, genotype, or dob.")
+            raise ValueError("Mouse field must be sex, genotype, dob, or mouse_user.")
 
         with self.transaction() as connection:
             cage = connection.execute(
@@ -1260,6 +1291,32 @@ class Database:
                 results.append(result)
             return results
 
+    def list_mouse_users(self) -> list[str]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT MIN(mouse_user) AS value
+                FROM animals
+                WHERE mouse_user IS NOT NULL AND mouse_user != ''
+                GROUP BY mouse_user COLLATE NOCASE
+                ORDER BY value COLLATE NOCASE, value
+                """
+            ).fetchall()
+            return [str(row["value"]) for row in rows]
+
+    def list_rooms(self) -> list[str]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT MIN(room) AS value
+                FROM cages
+                WHERE room IS NOT NULL AND room != ''
+                GROUP BY room COLLATE NOCASE
+                ORDER BY value COLLATE NOCASE, value
+                """
+            ).fetchall()
+            return [str(row["value"]) for row in rows]
+
     def _tags_for_cage(self, cage_id: int) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             """
@@ -1270,6 +1327,19 @@ class Database:
             (cage_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def _mouse_users_for_cage(self, cage_id: int) -> list[str]:
+        rows = self.connection.execute(
+            """
+            SELECT MIN(mouse_user) AS value
+            FROM animals
+            WHERE cage_id = ? AND mouse_user IS NOT NULL AND mouse_user != ''
+            GROUP BY mouse_user COLLATE NOCASE
+            ORDER BY value COLLATE NOCASE, value
+            """,
+            (cage_id,),
+        ).fetchall()
+        return [str(row["value"]) for row in rows]
 
     def _cage_record(self, row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
@@ -1315,6 +1385,14 @@ class Database:
             result["genotype"] = "Mixed"
         else:
             result["genotype"] = None
+        mouse_users = self._mouse_users_for_cage(cage_id)
+        result["mouse_users"] = mouse_users
+        if len(mouse_users) == 1:
+            result["mouse_user"] = mouse_users[0]
+        elif len(mouse_users) > 1:
+            result["mouse_user"] = "Mixed"
+        else:
+            result["mouse_user"] = None
         result["tags"] = self._tags_for_cage(cage_id)
         return result
 
@@ -1337,9 +1415,17 @@ class Database:
         status: str | None = None,
         tag: str | None = None,
         view: str = "all",
+        mouse_user: str | None = None,
+        room: str | None = None,
+        sort: str | None = None,
+        direction: str = "asc",
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         values: list[Any] = []
+        if sort not in {None, "cage_card_id", "room", "status"}:
+            raise ValueError("Cage sort field is invalid.")
+        if direction not in {"asc", "desc"}:
+            raise ValueError("Cage sort direction is invalid.")
         if view not in _CAGE_VIEWS:
             raise ValueError("Cage view is invalid.")
         canonical_view = "using" if view == "single" else view
@@ -1362,18 +1448,33 @@ class Database:
                 raise ValueError("Cage status filter is invalid.")
             clauses.append("c.status = ?")
             values.append(status)
+        cleaned_mouse_user = self._clean(mouse_user)
+        if cleaned_mouse_user:
+            clauses.append(
+                """EXISTS (
+                    SELECT 1 FROM animals user_animals
+                    WHERE user_animals.cage_id = c.id
+                      AND user_animals.mouse_user = ? COLLATE NOCASE
+                )"""
+            )
+            values.append(cleaned_mouse_user)
+        cleaned_room = self._clean(room)
+        if cleaned_room:
+            clauses.append("c.room = ? COLLATE NOCASE")
+            values.append(cleaned_room)
         if search:
             clauses.append(
                 """(
                     c.cage_card_id LIKE ? OR c.room LIKE ? OR c.note LIKE ? OR EXISTS (
                         SELECT 1 FROM animals a WHERE a.cage_id = c.id AND (
                             a.public_id LIKE ? OR a.legacy_id LIKE ? OR a.genotype LIKE ?
+                            OR a.mouse_user LIKE ?
                         )
                     )
                 )"""
             )
             pattern = f"%{search}%"
-            values.extend([pattern] * 6)
+            values.extend([pattern] * 7)
         if tag:
             clauses.append(
                 """EXISTS (
@@ -1383,14 +1484,36 @@ class Database:
             )
             values.append(tag)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql_direction = direction.upper()
+        if sort is None:
+            order_by = """
+                CASE c.status WHEN 'active' THEN 0 WHEN 'on_order' THEN 1 ELSE 2 END,
+                c.cage_card_id COLLATE NOCASE,
+                c.id
+            """
+        elif sort == "cage_card_id":
+            order_by = f"c.cage_card_id COLLATE NOCASE {sql_direction}, c.id {sql_direction}"
+        elif sort == "room":
+            order_by = f"""
+                CASE WHEN c.room IS NULL OR c.room = '' THEN 1 ELSE 0 END,
+                c.room COLLATE NOCASE {sql_direction},
+                c.cage_card_id COLLATE NOCASE,
+                c.id
+            """
+        else:
+            order_by = f"""
+                CASE c.status WHEN 'active' THEN 0 WHEN 'on_order' THEN 1 ELSE 2 END
+                    {sql_direction},
+                c.cage_card_id COLLATE NOCASE,
+                c.id
+            """
         with self._lock:
             rows = self.connection.execute(
                 f"""
                 SELECT c.*, source.cage_card_id AS source_cage_card_id
                 FROM cages c LEFT JOIN cages source ON source.id = c.source_cage_id
                 {where}
-                ORDER BY CASE c.status WHEN 'active' THEN 0 WHEN 'on_order' THEN 1 ELSE 2 END,
-                         c.cage_card_id COLLATE NOCASE
+                ORDER BY {order_by}
                 """,
                 values,
             ).fetchall()

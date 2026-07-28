@@ -17,7 +17,11 @@ _BATCH_ANIMAL_FIELD_LABELS = {
     "sex": "sex",
     "genotype": "genotype",
     "dob": "date of birth",
+    "mouse_user": "mouse user",
 }
+_CAGE_FILTER_STATUSES = {"all", "active", "inactive", "on_order"}
+_CAGE_SORT_FIELDS = {"cage_card_id", "room", "status"}
+_SORT_DIRECTIONS = {"asc", "desc"}
 
 
 def _db(request: Request) -> Database:
@@ -68,12 +72,21 @@ def _sex(value: str) -> str:
     }.get(value.strip().casefold(), "U")
 
 
+def _canonical_choice(value: str, choices: set[str], default: str) -> str:
+    candidate = value.strip().casefold()
+    return candidate if candidate in choices else default
+
+
 def _cage_view_urls(
     request: Request,
     *,
     search: str,
     status: str,
     tag: str,
+    mouse_user: str,
+    room: str,
+    sort: str,
+    direction: str,
 ) -> dict[str, str]:
     shared: dict[str, str] = {}
     if cleaned_search := _clean(search):
@@ -82,6 +95,14 @@ def _cage_view_urls(
         shared["status"] = status
     if cleaned_tag := _clean(tag):
         shared["tag"] = cleaned_tag
+    if cleaned_mouse_user := _clean(mouse_user):
+        shared["mouse_user"] = cleaned_mouse_user
+    if cleaned_room := _clean(room):
+        shared["room"] = cleaned_room
+    if sort != "status":
+        shared["sort"] = sort
+    if direction != "asc":
+        shared["direction"] = direction
     return {
         view_name: _app_path(
             request,
@@ -97,16 +118,29 @@ def index(
     search: str = "",
     status: str = "all",
     tag: str = "",
+    mouse_user: str = "",
+    room: str = "",
+    sort: str = "status",
+    direction: str = "asc",
     view: Literal["all", "stock", "using", "single", "breeding"] = "all",
     message: str = "",
     kind: str = "success",
 ) -> HTMLResponse:
     database = _db(request)
     canonical_view = "using" if view == "single" else view
+    canonical_status = _canonical_choice(status, _CAGE_FILTER_STATUSES, "all")
+    canonical_sort = _canonical_choice(sort, _CAGE_SORT_FIELDS, "status")
+    canonical_direction = _canonical_choice(direction, _SORT_DIRECTIONS, "asc")
+    cleaned_mouse_user = _clean(mouse_user)
+    cleaned_room = _clean(room)
     cages = database.list_cages(
         search=_clean(search),
-        status=None if status == "all" else status,
+        status=None if canonical_status == "all" else canonical_status,
         tag=_clean(tag),
+        mouse_user=cleaned_mouse_user,
+        room=cleaned_room,
+        sort=canonical_sort,
+        direction=canonical_direction,
         view=canonical_view,
     )
     return request.app.state.templates.TemplateResponse(
@@ -118,17 +152,27 @@ def index(
             "summary": database.summary(),
             "cages": cages,
             "all_tags": database.list_tags(),
+            "mouse_users": database.list_mouse_users(),
+            "rooms": database.list_rooms(),
             "filters": {
                 "search": search,
-                "status": status,
+                "status": canonical_status,
                 "tag": tag,
+                "mouse_user": cleaned_mouse_user or "",
+                "room": cleaned_room or "",
+                "sort": canonical_sort,
+                "direction": canonical_direction,
                 "view": canonical_view,
             },
             "view_urls": _cage_view_urls(
                 request,
                 search=search,
-                status=status,
+                status=canonical_status,
                 tag=tag,
+                mouse_user=cleaned_mouse_user or "",
+                room=cleaned_room or "",
+                sort=canonical_sort,
+                direction=canonical_direction,
             ),
             "message": message,
             "message_kind": kind,
@@ -157,6 +201,7 @@ def cage_detail(
             "cage": cage,
             "animals": database.list_animals(cage_id, include_inactive=True),
             "all_tags": database.list_tags(),
+            "mouse_users": database.list_mouse_users(),
             "operators": database.list_operators(),
             "surgery_types": database.list_surgery_types(),
             "message": message,
@@ -178,6 +223,7 @@ def create_cage(
     sex: Annotated[str, Form()] = "U",
     dob: Annotated[str, Form()] = "",
     genotype: Annotated[str, Form()] = "",
+    mouse_user: Annotated[str, Form()] = "",
     room: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
     is_breeding_pair: Annotated[bool, Form()] = False,
@@ -189,6 +235,7 @@ def create_cage(
             sex=_sex(sex),
             dob=_clean(dob),
             genotype=_clean(genotype),
+            mouse_user=_clean(mouse_user),
             room=_clean(room),
             note=_clean(note),
             creation_type="manual",
@@ -211,6 +258,7 @@ def add_mice(
     sex: Annotated[str, Form()] = "U",
     dob: Annotated[str, Form()] = "",
     genotype: Annotated[str, Form()] = "",
+    mouse_user: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     try:
@@ -220,6 +268,7 @@ def add_mice(
             sex=_sex(sex),
             dob=_clean(dob),
             genotype=_clean(genotype),
+            mouse_user=_clean(mouse_user),
             note=_clean(note),
         )
     except ValueError as exc:
@@ -268,6 +317,7 @@ def wean_cage(
     sex: Annotated[str, Form()] = "U",
     dob: Annotated[str, Form()] = "",
     genotype: Annotated[str, Form()] = "",
+    mouse_user: Annotated[str, Form()] = "",
     destination_cage_card_id: Annotated[str, Form()] = "",
     destination_room: Annotated[str, Form()] = "",
     destination_note: Annotated[str, Form()] = "",
@@ -279,6 +329,7 @@ def wean_cage(
             sex=_sex(sex),
             dob=_clean(dob),
             genotype=_clean(genotype),
+            mouse_user=_clean(mouse_user),
             cage_card_id=_clean(destination_cage_card_id),
             room=_clean(destination_room),
             note=_clean(destination_note),
@@ -340,7 +391,7 @@ def batch_update_cage_animals(
         return _redirect(
             request,
             f"/cages/{cage_id}#mice",
-            "Choose sex, genotype, or date of birth.",
+            "Choose sex, genotype, date of birth, or mouse user.",
             kind="error",
         )
 
@@ -395,6 +446,7 @@ def update_animal(
     sex: Annotated[str, Form()] = "U",
     dob: Annotated[str, Form()] = "",
     genotype: Annotated[str, Form()] = "",
+    mouse_user: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     database = _db(request)
@@ -408,6 +460,7 @@ def update_animal(
             sex=_sex(sex),
             dob=_clean(dob),
             genotype=_clean(genotype),
+            mouse_user=_clean(mouse_user),
             note=_clean(note),
         )
     except ValueError as exc:

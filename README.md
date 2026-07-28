@@ -14,8 +14,9 @@ after import.
 - One automatically generated ID per mouse, such as `A-1839`
 - Background lineage tracking for mice created together
 - DOB and automatically calculated age
-- Sex, genotype, free-form notes, and optional legacy mouse labels
+- Sex, genotype, assigned mouse user, free-form notes, and optional legacy mouse labels
 - Cage tags and tag filtering
+- Cage filtering by mouse user, room, and status, with configurable list sorting
 - Stock/unused, single-mouse, and breeding-pair cage views
 - Split/move workflows and breeding-pair-only litter weaning
 - Configurable room aliases for Regular Cycle, Reverse Cycle, and Breeding Core

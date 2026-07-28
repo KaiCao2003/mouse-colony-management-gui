@@ -279,7 +279,7 @@ def test_root_hash_navigation_targets_and_filter_links(tmp_path: Path) -> None:
     assert 'href="/#cages"' in html
     assert 'href="/#new-cage"' in html
     assert 'class="filter-form" method="get" action="/#cages"' in html
-    assert 'class="button button--quiet" href="/#cages"' in html
+    assert 'class="button button--quiet" href="#cages"' in html
     assert html.count('href="/?status=active&amp;view=all#cages"') >= 2
     assert 'href="/?status=active&amp;view=stock#cages"' in html
 
@@ -401,6 +401,165 @@ def test_view_switcher_preserves_current_filters(tmp_path: Path) -> None:
             "status": ["active"],
             "tag": ["Group & One"],
         }
+
+
+def test_index_filters_sorts_and_preserves_extended_query(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        database.create_cage(
+            cage_card_id="FILTER-A",
+            animal_count=1,
+            mouse_user="Alice",
+            room="ROOM-REGULAR",
+        )
+        database.create_cage(
+            cage_card_id="FILTER-B",
+            animal_count=1,
+            mouse_user="Alice",
+            room="ROOM-REGULAR",
+        )
+        database.create_cage(
+            cage_card_id="FILTER-C",
+            animal_count=1,
+            mouse_user="Bob",
+            room="ROOM-REVERSE",
+        )
+
+        response = client.get(
+            "/",
+            params={
+                "mouse_user": " Alice ",
+                "room": "ROOM-REGULAR",
+                "status": "active",
+                "sort": "cage_card_id",
+                "direction": "desc",
+            },
+        )
+        invalid = client.get(
+            "/",
+            params={"status": "invalid", "sort": "invalid", "direction": "sideways"},
+        )
+
+    assert response.status_code == 200
+    assert response.text.index("FILTER-B") < response.text.index("FILTER-A")
+    assert "FILTER-C" not in response.text
+    assert 'name="mouse_user"' in response.text
+    assert 'value="Alice"' in response.text
+    assert 'name="room"' in response.text
+    assert 'value="ROOM-REGULAR"' in response.text
+
+    for view_name, label in (
+        ("all", "All cages"),
+        ("stock", "Stock mice"),
+        ("using", "In-use mice"),
+        ("breeding", "Breeding pairs"),
+    ):
+        match = re.search(rf'href="([^"]+)"[^>]*>{re.escape(label)}</a>', response.text)
+        assert match is not None
+        assert parse_qs(urlsplit(unescape(match.group(1))).query) == {
+            "view": [view_name],
+            "status": ["active"],
+            "mouse_user": ["Alice"],
+            "room": ["ROOM-REGULAR"],
+            "sort": ["cage_card_id"],
+            "direction": ["desc"],
+        }
+
+    assert invalid.status_code == 200
+    assert "FILTER-A" in invalid.text
+    assert "FILTER-B" in invalid.text
+    assert "FILTER-C" in invalid.text
+
+
+def test_mouse_user_flows_through_create_add_update_batch_and_wean(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        headers = _csrf(client)
+        created_response = client.post(
+            "/cages/new",
+            headers=headers,
+            data={
+                "cage_card_id": "USER-SOURCE",
+                "count": "1",
+                "sex": "M",
+                "dob": "2026-01-02",
+                "genotype": "Founder",
+                "mouse_user": "  Creator  ",
+                "room": "ROOM-BREEDING",
+                "is_breeding_pair": "on",
+            },
+            follow_redirects=False,
+        )
+        cage_id = int(urlsplit(created_response.headers["location"]).path.rsplit("/", 1)[1])
+        database = client.app.state.database
+        created_animal = database.list_animals(cage_id)[0]
+
+        added_response = client.post(
+            f"/cages/{cage_id}/add-mice",
+            headers=headers,
+            data={
+                "count": "1",
+                "sex": "F",
+                "dob": "2026-02-03",
+                "genotype": "Added",
+                "mouse_user": "Adder",
+            },
+            follow_redirects=False,
+        )
+        after_add = database.list_animals(cage_id)
+        added_animal = next(
+            animal for animal in after_add if animal["id"] != created_animal["id"]
+        )
+
+        updated_response = client.post(
+            f"/animals/{created_animal['id']}/update",
+            headers=headers,
+            data={
+                "legacy_id": "Legacy user mouse",
+                "sex": "M",
+                "dob": "2026-01-02",
+                "genotype": "Founder",
+                "mouse_user": "Editor",
+                "note": "updated owner",
+            },
+            follow_redirects=False,
+        )
+        edited_animal = database.get_animal(int(created_animal["id"]))
+
+        batch_response = client.post(
+            f"/cages/{cage_id}/animals/batch-update",
+            headers=headers,
+            data={"field": "mouse_user", "value": "Batch Owner"},
+            follow_redirects=False,
+        )
+        after_batch = database.list_animals(cage_id, include_inactive=True)
+
+        wean_response = client.post(
+            f"/cages/{cage_id}/wean",
+            headers=headers,
+            data={
+                "count": "2",
+                "sex": "F",
+                "dob": "2026-07-01",
+                "genotype": "Weaned",
+                "mouse_user": "Wean User",
+                "destination_cage_card_id": "USER-WEAN",
+            },
+            follow_redirects=False,
+        )
+        wean_id = int(urlsplit(wean_response.headers["location"]).path.rsplit("/", 1)[1])
+        weaned_animals = database.list_animals(wean_id)
+
+    assert created_response.status_code == 303
+    assert created_animal["mouse_user"] == "Creator"
+    assert added_response.status_code == 303
+    assert added_animal["mouse_user"] == "Adder"
+    assert updated_response.status_code == 303
+    assert edited_animal is not None and edited_animal["mouse_user"] == "Editor"
+    assert batch_response.status_code == 303
+    assert {animal["mouse_user"] for animal in after_batch} == {"Batch Owner"}
+    assert wean_response.status_code == 303
+    assert len(weaned_animals) == 2
+    assert {animal["mouse_user"] for animal in weaned_animals} == {"Wean User"}
 
 
 def test_update_animal_persists_every_editable_detail(tmp_path: Path) -> None:
@@ -526,7 +685,7 @@ def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(
     assert invalid_location.fragment == "mice"
     assert parse_qs(invalid_location.query)["kind"] == ["error"]
     assert parse_qs(invalid_location.query)["message"] == [
-        "Choose sex, genotype, or date of birth."
+        "Choose sex, genotype, date of birth, or mouse user."
     ]
 
 
@@ -638,8 +797,23 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         rf'<form\b[^>]*action="{re.escape(batch_action)}"[^>]*>',
         html,
     )
-    assert len(batch_forms) == 3
+    assert len(batch_forms) == 4
     assert all('data-return-hash="#mice"' in form for form in batch_forms)
+    batch_form_bodies = re.findall(
+        r'<form\b[^>]*action="[^"]*/animals/batch-update"[^>]*>.*?</form>',
+        html,
+        re.DOTALL,
+    )
+    mouse_user_batch = next(
+        form for form in batch_form_bodies if 'value="mouse_user"' in form
+    )
+    mouse_user_value = re.search(
+        r'<input[^>]*name="value"[^>]*>',
+        mouse_user_batch,
+    )
+    assert mouse_user_value is not None
+    assert "required" not in mouse_user_value.group(0)
+    assert 'placeholder="Leave blank to clear"' in mouse_user_value.group(0)
 
     for action in (
         f"/animals/{animal['id']}/surgery",

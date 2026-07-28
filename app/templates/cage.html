@@ -35,6 +35,7 @@
 
       {% if message %}<div class="notice notice--{{ message_kind or 'success' }}" role="status">{{ message }}</div>{% endif %}
       <div class="client-notice" data-client-notice role="alert" hidden></div>
+      <datalist id="mouse-user-options">{% for mouse_user in mouse_users %}<option value="{{ mouse_user }}"></option>{% endfor %}</datalist>
 
       <section id="cage-details" class="panel overview-panel" aria-label="Cage information">
         <div class="section-heading section-heading--compact">
@@ -79,6 +80,7 @@
           <div class="action-form-grid">
             <label class="field"><span>Number</span><input type="number" name="count" min="1" max="100" step="1" value="1" required></label>
             <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
+            <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" maxlength="100" autocomplete="off"></label>
             <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
             <label class="field"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
             <label class="field action-note field--single-line-note"><span>Note</span><textarea name="note" rows="1"></textarea></label>
@@ -105,6 +107,7 @@
               <div class="form-grid form-grid--four">
                 <label class="field"><span>Number</span><input type="number" name="count" min="1" max="100" step="1" value="1" required></label>
                 <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
+                <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" maxlength="100" autocomplete="off"></label>
                 <label class="field"><span>Date of birth</span><input type="date" name="dob" required></label>
                 <label class="field"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
                 <label class="field"><span>New cage card ID <small>optional</small></span><input type="text" name="destination_cage_card_id" maxlength="100" autocomplete="off"></label>
@@ -139,6 +142,11 @@
                 <label class="field"><span>Date of birth</span><input type="date" name="value" required></label>
                 <button class="button button--small" type="submit" aria-label="Apply date of birth to all mice" data-pending-label="Updating…">Apply</button>
               </form>
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change mouse user for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+                <input type="hidden" name="field" value="mouse_user">
+                <label class="field"><span>Mouse user</span><input type="text" name="value" list="mouse-user-options" maxlength="100" placeholder="Leave blank to clear" autocomplete="off"></label>
+                <button class="button button--small" type="submit" aria-label="Apply mouse user to all mice" data-pending-label="Updating…">Apply</button>
+              </form>
             </div>
           </details>
           <div class="animal-list">
@@ -157,6 +165,7 @@
                   <form class="edit-animal-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/update" data-return-hash="#mouse-{{ animal.id }}">
                     <div class="mouse-detail-grid">
                       <label class="field"><span>Previous mouse ID</span><input type="text" name="legacy_id" value="{{ animal.legacy_id or '' }}" maxlength="100" autocomplete="off"></label>
+                      <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" value="{{ animal.mouse_user or '' }}" maxlength="100" autocomplete="off"></label>
                       <label class="field"><span>Sex</span><select name="sex"><option value="U"{% if not animal.sex or animal.sex == 'U' %} selected{% endif %}>Unknown</option><option value="F"{% if animal.sex == 'F' %} selected{% endif %}>♀ Female</option><option value="M"{% if animal.sex == 'M' %} selected{% endif %}>♂ Male</option></select></label>
                       <label class="field"><span>Date of birth</span><input type="date" name="dob" value="{{ animal.dob or '' }}"></label>
                       <label class="field"><span>Genotype</span><input type="text" name="genotype" value="{{ animal.genotype or '' }}" autocomplete="off"></label>

@@ -27,6 +27,8 @@
     <main id="main-content" class="shell page-stack" tabindex="-1">
       {% if message %}<div class="notice notice--{{ message_kind or 'success' }}" role="status">{{ message }}</div>{% endif %}
       <div class="client-notice" data-client-notice role="alert" hidden></div>
+      <datalist id="mouse-user-options">{% for mouse_user in mouse_users %}<option value="{{ mouse_user }}"></option>{% endfor %}</datalist>
+      <datalist id="room-options">{% for room in rooms %}<option value="{{ room }}"></option>{% endfor %}</datalist>
 
       <section id="cages" class="workspace-view" role="tabpanel" aria-labelledby="workspace-tab-cages" data-workspace-panel="cages">
         <section class="page-heading" aria-labelledby="page-title">
@@ -49,7 +51,9 @@
         </nav>
         <form class="filter-form" method="get" action="{{ base_path }}/#cages">
           <input type="hidden" name="view" value="{{ filters.view or 'all' }}">
-          <label class="field field--search"><span>Search</span><input type="search" name="search" value="{{ filters.search or '' }}" placeholder="Cage ID, genotype, room…" autocomplete="off"></label>
+          <label class="field field--search"><span>Search</span><input type="search" name="search" value="{{ filters.search or '' }}" placeholder="Cage ID, mouse ID, genotype, user…" autocomplete="off"></label>
+          <label class="field"><span>Mouse user</span><input type="search" name="mouse_user" list="mouse-user-options" value="{{ filters.mouse_user or '' }}" maxlength="100" autocomplete="off"></label>
+          <label class="field"><span>Room</span><input type="search" name="room" list="room-options" value="{{ filters.room or '' }}" maxlength="100" autocomplete="off"></label>
           <label class="field">
             <span>Status</span>
             <select name="status">
@@ -69,6 +73,21 @@
               {% endfor %}
             </select>
           </label>
+          <label class="field">
+            <span>Sort by</span>
+            <select name="sort">
+              <option value="cage_card_id"{% if not filters.sort or filters.sort == 'cage_card_id' %} selected{% endif %}>Cage card ID</option>
+              <option value="room"{% if filters.sort == 'room' %} selected{% endif %}>Room</option>
+              <option value="status"{% if filters.sort == 'status' %} selected{% endif %}>Status</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Direction</span>
+            <select name="direction">
+              <option value="asc"{% if not filters.direction or filters.direction == 'asc' %} selected{% endif %}>Ascending</option>
+              <option value="desc"{% if filters.direction == 'desc' %} selected{% endif %}>Descending</option>
+            </select>
+          </label>
           <div class="filter-form__actions"><button class="button button--primary" type="submit">Apply</button><a class="button button--quiet" href="{{ base_path }}/#cages">Clear</a></div>
         </form>
       </section>
@@ -79,13 +98,14 @@
           <div class="table-scroll" tabindex="0" role="region" aria-label="Cage list">
             <table class="data-table cage-table">
               <caption class="sr-only">Cages matching the current filters</caption>
-              <thead><tr><th scope="col">Cage</th><th scope="col">Mice</th><th scope="col">Room</th><th scope="col">Sex</th><th scope="col">Genotype</th><th scope="col">Tags</th><th scope="col">Status</th></tr></thead>
+              <thead><tr><th scope="col">Cage</th><th scope="col">Mice</th><th scope="col">Mouse users</th><th scope="col">Room</th><th scope="col">Sex</th><th scope="col">Genotype</th><th scope="col">Tags</th><th scope="col">Status</th></tr></thead>
               <tbody>
                 {% for cage in cages %}
                   {% set cage_status = cage.status or 'active' %}
                   <tr data-cage-row-href="{{ base_path }}/cages/{{ cage.id }}">
                     <td data-label="Cage"><a class="record-link" href="{{ base_path }}/cages/{{ cage.id }}">{{ cage.cage_card_id or ('Cage ' ~ cage.id) }}</a>{% if cage.is_breeding_pair %}<span class="subtle">Breeding pair</span>{% endif %}</td>
                     <td data-label="Mice"><strong class="numeric">{{ cage.active_count }}</strong>{% if cage.total_count is defined and cage.total_count != cage.active_count %}<span class="subtle">{{ cage.total_count }} total</span>{% endif %}</td>
+                    <td class="mouse-users-cell" data-label="Mouse users">{% if cage.mouse_users %}{{ cage.mouse_users | join(', ') }}{% else %}<span class="muted">—</span>{% endif %}</td>
                     <td data-label="Room">{% if cage.room_alias %}<strong class="room-name">{{ cage.room_alias }}</strong>{% elif cage.room %}<span>{{ cage.room }}</span>{% else %}<span class="muted">—</span>{% endif %}{% if cage.room_alias and cage.room and cage.room_alias != cage.room %}<span class="subtle">{{ cage.room }}</span>{% endif %}</td>
                     <td data-label="Sex">{% if cage.male_count or cage.female_count or cage.unknown_count %}<span class="sex-breakdown">{% if cage.male_count %}<span class="sex-count" role="img" aria-label="{{ cage.male_count }} male {% if cage.male_count == 1 %}mouse{% else %}mice{% endif %}"><span aria-hidden="true">♂ {{ cage.male_count }}</span></span>{% endif %}{% if cage.female_count %}<span class="sex-count" role="img" aria-label="{{ cage.female_count }} female {% if cage.female_count == 1 %}mouse{% else %}mice{% endif %}"><span aria-hidden="true">♀ {{ cage.female_count }}</span></span>{% endif %}{% if cage.unknown_count %}<span class="sex-count">Unknown {{ cage.unknown_count }}</span>{% endif %}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
                     <td data-label="Genotype">{{ cage.genotype or '—' }}</td>
@@ -116,9 +136,10 @@
               <label class="field"><span>Cage card ID <small>optional</small></span><input type="text" name="cage_card_id" maxlength="100" autocomplete="off"></label>
               <label class="field"><span>Number of mice</span><input type="number" name="count" min="0" max="100" step="1" value="0" required></label>
               <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
+              <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" maxlength="100" autocomplete="off"></label>
               <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
               <label class="field field--wide"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
-              <label class="field"><span>Room</span><input type="text" name="room" maxlength="100" autocomplete="off"></label>
+              <label class="field"><span>Room</span><input type="text" name="room" list="room-options" maxlength="100" autocomplete="off"></label>
               <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"><span><strong>Breeding pair</strong></span></label>
               <label class="field field--full"><span>Note</span><textarea name="note" rows="2" maxlength="4000"></textarea></label>
             </div>

@@ -53,6 +53,50 @@ def test_create_cage_generates_individual_ids_with_one_family_letter(
     assert {animal["sex"] for animal in animals} == {"F"}
 
 
+def test_mouse_user_threads_through_create_add_update_and_wean(database: Database) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="USER-CREATE",
+        animal_count=2,
+        mouse_user="  Alice  ",
+    )
+    created = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["mouse_user"] for animal in created} == {"Alice"}
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert cage["mouse_users"] == ["Alice"]
+    assert cage["mouse_user"] == "Alice"
+
+    added = database.add_animals(cage_id, count=1, mouse_user=" Bob ")
+    assert len(added) == 1 and added[0]["mouse_user"] == "Bob"
+    mixed = database.get_cage(cage_id)
+    assert mixed is not None
+    assert mixed["mouse_users"] == ["Alice", "Bob"]
+    assert mixed["mouse_user"] == "Mixed"
+
+    updated = database.update_animal(created[0]["id"], mouse_user=" Carol ")
+    assert updated["mouse_user"] == "Carol"
+    cleared = database.update_animal(created[0]["id"], mouse_user="   ")
+    assert cleared["mouse_user"] is None
+
+    wean_id = database.wean_cage(
+        cage_id,
+        count=2,
+        sex="F",
+        dob="2026-07-01",
+        genotype="WT",
+        mouse_user="Dana",
+        cage_card_id="USER-WEAN",
+    )
+    assert {
+        animal["mouse_user"] for animal in database.list_animals(wean_id, include_inactive=True)
+    } == {"Dana"}
+
+    with pytest.raises(ValueError, match="Mouse user must be 100 characters or fewer"):
+        database.create_cage(animal_count=1, mouse_user="U" * 101)
+    with pytest.raises(ValueError, match="Mouse user must be 100 characters or fewer"):
+        database.update_animal(created[1]["id"], mouse_user="U" * 101)
+
+
 def test_cage_active_sex_counts_distinguish_unknown_from_mixed_sexes(
     database: Database,
 ) -> None:
@@ -248,6 +292,43 @@ def test_initialize_migrates_existing_breeding_core_cages(tmp_path: Path) -> Non
         migrated.close()
 
 
+def test_initialize_migrates_legacy_animals_with_mouse_user_and_index(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-mouse-user.db"
+    old_schema = SCHEMA.replace("    mouse_user TEXT,\n", "")
+    connection = sqlite3.connect(path)
+    connection.executescript(old_schema)
+    cage_id = connection.execute(
+        """
+        INSERT INTO cages(cage_card_id, family_letter, status)
+        VALUES ('LEGACY-USER', 'A', 'active')
+        """
+    ).lastrowid
+    connection.execute(
+        """
+        INSERT INTO animals(public_id, cage_id, family_letter, sex, status)
+        VALUES ('A-0001', ?, 'A', 'F', 'active')
+        """,
+        (cage_id,),
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = Database(path)
+    migrated.initialize()
+    try:
+        columns = {row["name"] for row in migrated.connection.execute("PRAGMA table_info(animals)")}
+        indexes = {row["name"] for row in migrated.connection.execute("PRAGMA index_list(animals)")}
+        animal = migrated.get_animal(1)
+        assert "mouse_user" in columns
+        assert "animals_mouse_user_idx" in indexes
+        assert animal is not None and animal["mouse_user"] is None
+        assert migrated.update_animal(1, mouse_user="Legacy owner")["mouse_user"] == (
+            "Legacy owner"
+        )
+    finally:
+        migrated.close()
+
+
 def test_stock_summary_and_cage_views_use_current_active_counts(database: Database) -> None:
     stock_id = database.create_cage(cage_card_id="VIEW-STOCK", animal_count=3)
     single_id = database.create_cage(cage_card_id="VIEW-SINGLE", animal_count=1)
@@ -317,6 +398,113 @@ def test_stock_summary_and_cage_views_use_current_active_counts(database: Databa
         database.list_cages(view="unknown")
 
 
+def test_cage_user_and_room_filters_include_inactive_history(database: Database) -> None:
+    active_id = database.create_cage(
+        cage_card_id="FILTER-ACTIVE",
+        room="Room Beta",
+        animal_count=2,
+        mouse_user="Alice",
+    )
+    active_animals = database.list_animals(active_id)
+    database.update_animal(active_animals[1]["id"], mouse_user="Bob")
+    database.toggle_animal(active_animals[0]["id"])
+    inactive_id = database.create_cage(
+        cage_card_id="FILTER-INACTIVE",
+        status="inactive",
+        room="Room Alpha",
+        animal_count=1,
+        mouse_user="alice",
+    )
+    blank_id = database.create_cage(
+        cage_card_id="FILTER-BLANK",
+        room=None,
+        animal_count=1,
+        mouse_user="   ",
+    )
+
+    assert {cage["id"] for cage in database.list_cages(mouse_user=" ALICE ")} == {
+        active_id,
+        inactive_id,
+    }
+    assert [cage["id"] for cage in database.list_cages(mouse_user="alice", status="inactive")] == [
+        inactive_id
+    ]
+    assert [cage["id"] for cage in database.list_cages(room=" room beta ")] == [active_id]
+    assert [cage["id"] for cage in database.list_cages(search="Bob")] == [active_id]
+    assert database.list_cages(mouse_user="   ") == database.list_cages()
+    assert database.list_cages(room="   ") == database.list_cages()
+
+    active = database.get_cage(active_id)
+    inactive = database.get_cage(inactive_id)
+    blank = database.get_cage(blank_id)
+    assert active is not None and active["mouse_users"] == ["Alice", "Bob"]
+    assert active["mouse_user"] == "Mixed"
+    assert inactive is not None and inactive["mouse_users"] == ["alice"]
+    assert blank is not None and blank["mouse_users"] == [] and blank["mouse_user"] is None
+    assert database.list_mouse_users() == ["Alice", "Bob"]
+    assert database.list_rooms() == ["Room Alpha", "Room Beta"]
+
+
+def test_cage_sorting_is_allowlisted_directional_and_deterministic(database: Database) -> None:
+    database.create_cage(cage_card_id="C-THIRD", status="inactive", room="Room B")
+    database.create_cage(cage_card_id="A-FIRST", status="active", room="Room C")
+    database.create_cage(cage_card_id="B-SECOND", status="on_order", room="Room A")
+    database.create_cage(cage_card_id="D-NO-ROOM", status="active", room=None)
+    database.create_cage(cage_card_id="E-ROOM-B", status="active", room="Room B")
+
+    def identifiers(**kwargs: str | None) -> list[str]:
+        return [cage["cage_card_id"] for cage in database.list_cages(**kwargs)]
+
+    assert identifiers() == ["A-FIRST", "D-NO-ROOM", "E-ROOM-B", "B-SECOND", "C-THIRD"]
+    assert identifiers(sort="cage_card_id", direction="asc") == [
+        "A-FIRST",
+        "B-SECOND",
+        "C-THIRD",
+        "D-NO-ROOM",
+        "E-ROOM-B",
+    ]
+    assert identifiers(sort="cage_card_id", direction="desc") == [
+        "E-ROOM-B",
+        "D-NO-ROOM",
+        "C-THIRD",
+        "B-SECOND",
+        "A-FIRST",
+    ]
+    assert identifiers(sort="room", direction="asc") == [
+        "B-SECOND",
+        "C-THIRD",
+        "E-ROOM-B",
+        "A-FIRST",
+        "D-NO-ROOM",
+    ]
+    assert identifiers(sort="room", direction="desc") == [
+        "A-FIRST",
+        "C-THIRD",
+        "E-ROOM-B",
+        "B-SECOND",
+        "D-NO-ROOM",
+    ]
+    assert identifiers(sort="status", direction="asc") == [
+        "A-FIRST",
+        "D-NO-ROOM",
+        "E-ROOM-B",
+        "B-SECOND",
+        "C-THIRD",
+    ]
+    assert identifiers(sort="status", direction="desc") == [
+        "C-THIRD",
+        "B-SECOND",
+        "A-FIRST",
+        "D-NO-ROOM",
+        "E-ROOM-B",
+    ]
+
+    with pytest.raises(ValueError, match="sort field is invalid"):
+        database.list_cages(sort="protocol")
+    with pytest.raises(ValueError, match="sort direction is invalid"):
+        database.list_cages(sort="room", direction="sideways")
+
+
 def test_active_home_cages_use_every_letter_before_reusing(database: Database) -> None:
     cage_ids = [database.create_cage(cage_card_id=f"HOME-{index:02d}") for index in range(27)]
     letters = [database.get_cage(cage_id)["family_letter"] for cage_id in cage_ids]  # type: ignore[index]
@@ -375,6 +563,20 @@ def test_batch_update_animals_changes_one_field_for_active_and_inactive_mice(
     after_dob = database.list_animals(cage_id, include_inactive=True)
     assert {animal["dob"] for animal in after_dob} == {None}
     assert {animal["genotype"] for animal in after_dob} == {"Batch Het"}
+    assert (
+        database.batch_update_animals(
+            cage_id,
+            field="mouse_user",
+            value=" Batch owner ",
+        )
+        == 3
+    )
+    after_user = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["mouse_user"] for animal in after_user} == {"Batch owner"}
+    assert database.batch_update_animals(cage_id, field="mouse_user", value=" ") == 3
+    assert {
+        animal["mouse_user"] for animal in database.list_animals(cage_id, include_inactive=True)
+    } == {None}
     other_animal = database.get_animal(other_animal_id)
     assert other_animal is not None
     assert other_animal["sex"] == "M"
@@ -395,7 +597,10 @@ def test_batch_update_animals_validates_cage_field_and_value(database: Database)
     assert database.batch_update_animals(empty_cage_id, field="genotype", value="WT") == 0
     with pytest.raises(ValueError, match="Cage not found"):
         database.batch_update_animals(999_999, field="genotype", value="WT")
-    with pytest.raises(ValueError, match="Mouse field must be sex, genotype, or dob"):
+    with pytest.raises(
+        ValueError,
+        match="Mouse field must be sex, genotype, dob, or mouse_user",
+    ):
         database.batch_update_animals(cage_id, field="note", value="not allowed")
     with pytest.raises(ValueError, match="Sex must be M, F, or U"):
         database.batch_update_animals(cage_id, field="sex", value="X")
@@ -403,6 +608,8 @@ def test_batch_update_animals_validates_cage_field_and_value(database: Database)
         database.batch_update_animals(cage_id, field="sex", value=None)
     with pytest.raises(ValueError, match="DOB must be a valid date"):
         database.batch_update_animals(cage_id, field="dob", value="not-a-date")
+    with pytest.raises(ValueError, match="Mouse user must be 100 characters or fewer"):
+        database.batch_update_animals(cage_id, field="mouse_user", value="U" * 101)
 
     animal = database.list_animals(cage_id)[0]
     assert animal["sex"] == "M"

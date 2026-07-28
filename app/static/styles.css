@@ -488,10 +488,18 @@ textarea:focus-visible {
 
 .filter-form {
   display: grid;
-  grid-template-columns: minmax(240px, 1.7fr) repeat(2, minmax(155px, 0.8fr)) auto;
+  grid-template-columns: minmax(170px, 1.35fr) repeat(2, minmax(125px, 0.85fr)) minmax(110px, 0.7fr) minmax(125px, 0.8fr) minmax(130px, 0.8fr) minmax(105px, 0.65fr) auto;
   align-items: end;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.filter-form > .field {
+  gap: 3px;
+}
+
+.filter-form > .field > span {
+  font-size: 11px;
 }
 
 .view-switcher {
@@ -543,6 +551,17 @@ textarea:focus-visible {
   display: flex;
   align-items: end;
   gap: 8px;
+}
+
+.filter-form__actions {
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.filter-form__actions .button {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
 }
 
 .tag-list {
@@ -728,6 +747,13 @@ a.tag:hover {
 .room-name {
   color: var(--ink);
   font-weight: 700;
+}
+
+.mouse-users-cell {
+  max-width: 190px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .status--active {
@@ -936,7 +962,7 @@ a.tag:hover {
 
 .action-form-grid {
   display: grid;
-  grid-template-columns: 80px 150px 180px minmax(150px, 1fr) minmax(190px, 1.3fr) auto;
+  grid-template-columns: 80px 140px minmax(140px, 0.85fr) 170px minmax(150px, 1fr) minmax(180px, 1.2fr) auto;
   align-items: end;
   gap: 10px;
 }
@@ -1039,7 +1065,7 @@ a.tag:hover {
 
 .batch-edit__forms {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   padding: 10px 14px 12px;
   border-top: 1px solid var(--border);
   background: var(--surface-soft);
@@ -1154,7 +1180,7 @@ a.tag:hover {
 
 .mouse-detail-grid {
   display: grid;
-  grid-template-columns: minmax(130px, 0.8fr) 120px 165px minmax(150px, 1fr) minmax(180px, 1.25fr) auto;
+  grid-template-columns: minmax(120px, 0.75fr) minmax(125px, 0.8fr) 110px 155px minmax(140px, 0.95fr) minmax(170px, 1.15fr) auto;
   align-items: end;
   gap: 9px;
 }
@@ -1303,6 +1329,14 @@ a.tag:hover {
 }
 
 @media (max-width: 1180px) {
+  .filter-form {
+    grid-template-columns: minmax(180px, 1.25fr) repeat(3, minmax(120px, 1fr));
+  }
+
+  .filter-form__actions {
+    justify-content: flex-end;
+  }
+
   .action-form-grid {
     grid-template-columns: 80px repeat(3, minmax(130px, 1fr));
   }
@@ -1520,9 +1554,9 @@ a.tag:hover {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       "cage status"
-      "mice room"
-      "sex genotype"
-      "tags tags";
+      "mice users"
+      "room sex"
+      "genotype tags";
     gap: 10px 14px;
     padding: 12px 14px;
     border-bottom: 1px solid var(--border);
@@ -1549,11 +1583,12 @@ a.tag:hover {
 
   .cage-table td:nth-child(1) { grid-area: cage; }
   .cage-table td:nth-child(2) { grid-area: mice; }
-  .cage-table td:nth-child(3) { grid-area: room; }
-  .cage-table td:nth-child(4) { grid-area: sex; }
-  .cage-table td:nth-child(5) { grid-area: genotype; }
-  .cage-table td:nth-child(6) { grid-area: tags; }
-  .cage-table td:nth-child(7) {
+  .cage-table td:nth-child(3) { grid-area: users; }
+  .cage-table td:nth-child(4) { grid-area: room; }
+  .cage-table td:nth-child(5) { grid-area: sex; }
+  .cage-table td:nth-child(6) { grid-area: genotype; }
+  .cage-table td:nth-child(7) { grid-area: tags; }
+  .cage-table td:nth-child(8) {
     grid-area: status;
     justify-self: end;
     text-align: right;
