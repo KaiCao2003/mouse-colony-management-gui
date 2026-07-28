@@ -74,7 +74,8 @@
         </div>
       </section>
 
-      <section id="cage-actions" class="panel action-panel" aria-labelledby="cage-actions-title">
+      <section id="cage-actions" class="panel action-panel" aria-label="Cage actions">
+        {% if cage.is_breeding_pair and cage_status == 'active' %}
         <div class="section-heading section-heading--compact"><div><h2 id="cage-actions-title">Add mice</h2></div></div>
         <form class="action-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/add-mice{{ return_query }}" data-return-hash="#cage-actions">
           <div class="action-form-grid">
@@ -87,6 +88,7 @@
             <button class="button button--primary" type="submit" data-pending-label="Adding…">Add mice</button>
           </div>
         </form>
+        {% endif %}
         <div class="disclosure-grid">
           <details class="disclosure">
             <summary><span>Split cage</span></summary>

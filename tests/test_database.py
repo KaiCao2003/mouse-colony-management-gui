@@ -58,6 +58,7 @@ def test_mouse_user_threads_through_create_add_update_and_wean(database: Databas
         cage_card_id="USER-CREATE",
         animal_count=2,
         mouse_user="  Alice  ",
+        is_breeding_pair=True,
     )
     created = database.list_animals(cage_id, include_inactive=True)
     assert {animal["mouse_user"] for animal in created} == {"Alice"}
@@ -95,6 +96,20 @@ def test_mouse_user_threads_through_create_add_update_and_wean(database: Databas
         database.create_cage(animal_count=1, mouse_user="U" * 101)
     with pytest.raises(ValueError, match="Mouse user must be 100 characters or fewer"):
         database.update_animal(created[1]["id"], mouse_user="U" * 101)
+
+
+def test_direct_add_animals_rejects_non_breeding_cage_without_mutation(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(cage_card_id="NO-DIRECT-ADD", animal_count=1)
+
+    with pytest.raises(
+        ValueError,
+        match="Mice can only be added directly to breeding-pair cages",
+    ):
+        database.add_animals(cage_id, count=1, sex="F")
+
+    assert len(database.list_animals(cage_id, include_inactive=True)) == 1
 
 
 def test_cage_active_sex_counts_distinguish_unknown_from_mixed_sexes(

@@ -419,12 +419,13 @@ def test_stock_and_using_views_render_separately_with_sex_breakdown(tmp_path: Pa
         database = client.app.state.database
         stock_id = database.create_cage(
             cage_card_id="VIEW-STOCK",
-            animal_count=2,
+            animal_count=4,
             sex="M",
             genotype="StockHet",
         )
-        database.add_animals(stock_id, count=1, sex="F", genotype="StockHet")
-        database.add_animals(stock_id, count=1, sex="U", genotype="StockHet")
+        stock_animals = database.list_animals(stock_id)
+        database.update_animal(stock_animals[2]["id"], sex="F")
+        database.update_animal(stock_animals[3]["id"], sex="U")
         using_id = database.create_cage(
             cage_card_id="VIEW-USING",
             animal_count=1,
@@ -810,7 +811,11 @@ def test_update_animal_persists_every_editable_detail(tmp_path: Path) -> None:
 def test_add_remove_and_restore_mouse_updates_active_count(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         database = client.app.state.database
-        cage_id = database.create_cage(cage_card_id="ADJUST-MICE", animal_count=1)
+        cage_id = database.create_cage(
+            cage_card_id="ADJUST-MICE",
+            animal_count=1,
+            is_breeding_pair=True,
+        )
         original_ids = {int(animal["id"]) for animal in database.list_animals(cage_id)}
         headers = _csrf(client)
 
@@ -854,6 +859,65 @@ def test_add_remove_and_restore_mouse_updates_active_count(tmp_path: Path) -> No
     assert after_add is not None and after_add["active_count"] == 3
     assert after_remove is not None and after_remove["active_count"] == 2
     assert after_restore is not None and after_restore["active_count"] == 3
+
+
+def test_direct_add_mice_is_limited_to_breeding_pair_cages(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        regular_id = database.create_cage(cage_card_id="REGULAR-CAGE", animal_count=1)
+        breeding_id = database.create_cage(
+            cage_card_id="BREEDING-CAGE",
+            animal_count=1,
+            is_breeding_pair=True,
+        )
+        inactive_breeding_id = database.create_cage(
+            cage_card_id="INACTIVE-BREEDING-CAGE",
+            status="inactive",
+            animal_count=1,
+            is_breeding_pair=True,
+        )
+
+        regular_detail = client.get(f"/cages/{regular_id}")
+        breeding_detail = client.get(f"/cages/{breeding_id}")
+        inactive_breeding_detail = client.get(f"/cages/{inactive_breeding_id}")
+        headers = _csrf(client)
+        rejected = client.post(
+            f"/cages/{regular_id}/add-mice",
+            headers=headers,
+            data={"count": "1", "sex": "F"},
+            follow_redirects=False,
+        )
+        accepted = client.post(
+            f"/cages/{breeding_id}/add-mice",
+            headers=headers,
+            data={"count": "1", "sex": "F"},
+            follow_redirects=False,
+        )
+
+        regular_animals = database.list_animals(regular_id)
+        breeding_animals = database.list_animals(breeding_id)
+
+    regular_action = f'/cages/{regular_id}/add-mice'
+    breeding_action = f'/cages/{breeding_id}/add-mice'
+    assert regular_detail.status_code == 200
+    assert regular_action not in regular_detail.text
+    assert f'/cages/{regular_id}/split' in regular_detail.text
+    assert breeding_detail.status_code == 200
+    assert breeding_action in breeding_detail.text
+    assert inactive_breeding_detail.status_code == 200
+    assert f'/cages/{inactive_breeding_id}/add-mice' not in inactive_breeding_detail.text
+
+    assert rejected.status_code == 303
+    rejected_location = urlsplit(rejected.headers["location"])
+    assert rejected_location.path == f"/cages/{regular_id}"
+    assert parse_qs(rejected_location.query)["kind"] == ["error"]
+    assert parse_qs(rejected_location.query)["message"] == [
+        "Mice can only be added directly to breeding-pair cages."
+    ]
+    assert len(regular_animals) == 1
+
+    assert accepted.status_code == 303
+    assert len(breeding_animals) == 2
 
 
 def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(

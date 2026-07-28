@@ -520,6 +520,8 @@ class Database:
             cage = connection.execute("SELECT * FROM cages WHERE id = ?", (cage_id,)).fetchone()
             if cage is None:
                 raise ValueError("Cage not found.")
+            if not cage["is_breeding_pair"]:
+                raise ValueError("Mice can only be added directly to breeding-pair cages.")
             if cage["status"] != "active":
                 raise ValueError("Reactivate the cage before adding mice.")
             for _ in range(count):
