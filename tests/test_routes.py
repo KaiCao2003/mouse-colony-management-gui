@@ -46,7 +46,10 @@ def _csrf(client: TestClient) -> dict[str, str]:
 
 
 def _form_tag(html: str, action: str) -> str:
-    match = re.search(rf'<form\b[^>]*action="{re.escape(action)}"[^>]*>', html)
+    match = re.search(
+        rf'<form\b[^>]*action="{re.escape(action)}(?:\?[^\"]*)?"[^>]*>',
+        html,
+    )
     assert match is not None, f"Missing form for {action}"
     return match.group(0)
 
@@ -61,7 +64,7 @@ def _assert_form_not_inside_details(html: str, action: str) -> None:
 
 def _cage_row(html: str, cage_id: int) -> str:
     for row in re.findall(r"<tr\b[^>]*>.*?</tr>", html, flags=re.DOTALL):
-        if f'href="/cages/{cage_id}"' in row:
+        if re.search(rf'href="/cages/{cage_id}(?:\?[^\"]*)?"', row):
             return row
     raise AssertionError(f"Missing table row for cage {cage_id}")
 
@@ -123,6 +126,7 @@ def test_reverse_proxy_root_path_prefixes_links_forms_and_redirects(tmp_path: Pa
             data={"cage_card_id": "PREFIX-CAGE", "count": "1", "sex": "F"},
             follow_redirects=False,
         )
+        detail = client.get(created.headers["location"])
 
     assert root.status_code == 200
     assert 'href="/colony/#cages"' in root.text
@@ -132,6 +136,8 @@ def test_reverse_proxy_root_path_prefixes_links_forms_and_redirects(tmp_path: Pa
     assert "/colony/static/styles.css" in root.text
     assert created.status_code == 303
     assert created.headers["location"].startswith("/colony/cages/")
+    assert 'class="back-link" href="/colony/#cages"' in detail.text
+    assert "return_to=%2Fcolony%2F%23cages" in detail.text
 
 
 def test_stock_view_only_renders_stock_cages(tmp_path: Path) -> None:
@@ -291,9 +297,108 @@ def test_cage_rows_expose_full_row_navigation_target(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     row = _cage_row(response.text, cage_id)
-    cage_href = f"/cages/{cage_id}"
-    assert f'data-cage-row-href="{cage_href}"' in row
-    assert f'class="record-link" href="{cage_href}"' in row
+    record_link = re.search(r'class="record-link" href="([^"]+)"', row)
+    row_link = re.search(r'data-cage-row-href="([^"]+)"', row)
+    assert record_link is not None and row_link is not None
+    cage_href = unescape(record_link.group(1))
+    assert unescape(row_link.group(1)) == cage_href
+    assert urlsplit(cage_href).path == f"/cages/{cage_id}"
+    assert parse_qs(urlsplit(cage_href).query)["return_to"] == ["/?view=all#cages"]
+
+
+def test_cage_detail_returns_to_source_list_through_repeated_edits(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(
+            cage_card_id="RETURN-SOURCE",
+            animal_count=2,
+            mouse_user="Alice",
+            room="ROOM-REGULAR",
+        )
+        source = client.get(
+            "/",
+            params={
+                "view": "stock",
+                "search": "RETURN",
+                "mouse_user": "Alice",
+                "room": "ROOM-REGULAR",
+                "status": "active",
+                "sort": "cage_card_id",
+                "direction": "desc",
+            },
+        )
+        row = _cage_row(source.text, cage_id)
+        record_link = re.search(r'class="record-link" href="([^"]+)"', row)
+        assert record_link is not None
+        detail_url = unescape(record_link.group(1))
+        return_to = parse_qs(urlsplit(detail_url).query)["return_to"][0]
+        detail = client.get(detail_url)
+
+        back_link = re.search(r'class="back-link" href="([^"]+)"', detail.text)
+        update_form = _form_tag(detail.text, f"/cages/{cage_id}/update")
+        update_action = re.search(r'action="([^"]+)"', update_form)
+        assert back_link is not None and update_action is not None
+        first_update = client.post(
+            unescape(update_action.group(1)),
+            headers=_csrf(client),
+            data={
+                "cage_card_id": "RETURN-SOURCE",
+                "room": "ROOM-REGULAR",
+                "note": "first save",
+            },
+            follow_redirects=False,
+        )
+        second_update = client.post(
+            unescape(update_action.group(1)),
+            headers=_csrf(client),
+            data={
+                "cage_card_id": "RETURN-SOURCE",
+                "room": "ROOM-REGULAR",
+                "note": "second save",
+            },
+            follow_redirects=False,
+        )
+        refreshed = client.get(second_update.headers["location"])
+
+    assert return_to == (
+        "/?view=stock&search=RETURN&status=active&mouse_user=Alice&room=ROOM-REGULAR"
+        "&sort=cage_card_id&direction=desc#cages"
+    )
+    assert unescape(back_link.group(1)) == return_to
+    assert first_update.status_code == second_update.status_code == 303
+    assert parse_qs(urlsplit(first_update.headers["location"]).query)["return_to"] == [
+        return_to
+    ]
+    assert parse_qs(urlsplit(second_update.headers["location"]).query)["return_to"] == [
+        return_to
+    ]
+    refreshed_back = re.search(r'class="back-link" href="([^"]+)"', refreshed.text)
+    assert refreshed_back is not None
+    assert unescape(refreshed_back.group(1)) == return_to
+
+
+def test_cage_detail_rejects_unsafe_return_targets(tmp_path: Path) -> None:
+    unsafe_targets = (
+        "https://example.com/",
+        "http://[",
+        "//example.com/",
+        "/cages/1",
+        "/?view=invalid#cages",
+        "/?view=all&view=stock#cages",
+        "/?next=https%3A%2F%2Fexample.com#cages",
+        "/?view=all#new-cage",
+    )
+    with _client(tmp_path) as client:
+        cage_id = client.app.state.database.create_cage(cage_card_id="SAFE-RETURN")
+        responses = [
+            client.get(f"/cages/{cage_id}", params={"return_to": target})
+            for target in unsafe_targets
+        ]
+
+    for response in responses:
+        back_link = re.search(r'class="back-link" href="([^"]+)"', response.text)
+        assert back_link is not None
+        assert unescape(back_link.group(1)) == "/#cages"
 
 
 def test_stock_and_using_views_render_separately_with_sex_breakdown(tmp_path: Path) -> None:
@@ -336,9 +441,9 @@ def test_stock_and_using_views_render_separately_with_sex_breakdown(tmp_path: Pa
     stock_row = _cage_row(stock_html, stock_id)
     using_row = _cage_row(using_html, using_id)
 
-    assert f'href="/cages/{stock_id}"' in stock_html
-    assert f'href="/cages/{using_id}"' not in stock_html
-    assert f'href="/cages/{breeding_id}"' not in stock_html
+    assert re.search(rf'href="/cages/{stock_id}(?:\?[^\"]*)?"', stock_html)
+    assert not re.search(rf'href="/cages/{using_id}(?:\?[^\"]*)?"', stock_html)
+    assert not re.search(rf'href="/cages/{breeding_id}(?:\?[^\"]*)?"', stock_html)
     assert 'aria-label="2 male stock mice"' in stock_html
     assert 'aria-label="1 female stock mouse"' in stock_html
     assert "Unknown 1" in stock_html
@@ -354,9 +459,9 @@ def test_stock_and_using_views_render_separately_with_sex_breakdown(tmp_path: Pa
     assert '<td data-label="Genotype">StockHet</td>' in stock_row
     assert 'data-label="Details"' not in stock_row
 
-    assert f'href="/cages/{using_id}"' in using_html
-    assert f'href="/cages/{stock_id}"' not in using_html
-    assert f'href="/cages/{breeding_id}"' not in using_html
+    assert re.search(rf'href="/cages/{using_id}(?:\?[^\"]*)?"', using_html)
+    assert not re.search(rf'href="/cages/{stock_id}(?:\?[^\"]*)?"', using_html)
+    assert not re.search(rf'href="/cages/{breeding_id}(?:\?[^\"]*)?"', using_html)
     assert 'aria-label="1 female mouse"' in using_row
     assert "♀ 1" in using_row
     assert "♂" not in using_row
@@ -777,6 +882,13 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
     ):
         assert f'id="{target_id}"' in html
 
+    post_actions = re.findall(
+        r'<form\b[^>]*\bmethod="post"[^>]*\baction="([^"]+)"',
+        html,
+    )
+    assert post_actions
+    assert all("return_to=%2F%23cages" in action for action in post_actions)
+
     for action in (
         f"/cages/{cage_id}/toggle",
         f"/cages/{cage_id}/update",
@@ -794,13 +906,14 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
 
     batch_action = f"/cages/{cage_id}/animals/batch-update"
     batch_forms = re.findall(
-        rf'<form\b[^>]*action="{re.escape(batch_action)}"[^>]*>',
+        rf'<form\b[^>]*action="{re.escape(batch_action)}(?:\?[^\"]*)?"[^>]*>',
         html,
     )
     assert len(batch_forms) == 4
     assert all('data-return-hash="#mice"' in form for form in batch_forms)
     batch_form_bodies = re.findall(
-        r'<form\b[^>]*action="[^"]*/animals/batch-update"[^>]*>.*?</form>',
+        r'<form\b[^>]*action="[^"]*/animals/batch-update(?:\?[^\"]*)?"[^>]*>'
+        r".*?</form>",
         html,
         re.DOTALL,
     )

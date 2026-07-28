@@ -102,8 +102,8 @@
               <tbody>
                 {% for cage in cages %}
                   {% set cage_status = cage.status or 'active' %}
-                  <tr data-cage-row-href="{{ base_path }}/cages/{{ cage.id }}">
-                    <td data-label="Cage"><a class="record-link" href="{{ base_path }}/cages/{{ cage.id }}">{{ cage.cage_card_id or ('Cage ' ~ cage.id) }}</a>{% if cage.is_breeding_pair %}<span class="subtle">Breeding pair</span>{% endif %}</td>
+                  <tr data-cage-row-href="{{ cage_detail_urls[cage.id] }}">
+                    <td data-label="Cage"><a class="record-link" href="{{ cage_detail_urls[cage.id] }}">{{ cage.cage_card_id or ('Cage ' ~ cage.id) }}</a>{% if cage.is_breeding_pair %}<span class="subtle">Breeding pair</span>{% endif %}</td>
                     <td data-label="Mice"><strong class="numeric">{{ cage.active_count }}</strong>{% if cage.total_count is defined and cage.total_count != cage.active_count %}<span class="subtle">{{ cage.total_count }} total</span>{% endif %}</td>
                     <td class="mouse-users-cell" data-label="Mouse users">{% if cage.mouse_users %}{{ cage.mouse_users | join(', ') }}{% else %}<span class="muted">—</span>{% endif %}</td>
                     <td data-label="Room">{% if cage.room_alias %}<strong class="room-name">{{ cage.room_alias }}</strong>{% elif cage.room %}<span>{{ cage.room }}</span>{% else %}<span class="muted">—</span>{% endif %}{% if cage.room_alias and cage.room and cage.room_alias != cage.room %}<span class="subtle">{{ cage.room }}</span>{% endif %}</td>

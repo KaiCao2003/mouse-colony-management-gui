@@ -16,7 +16,7 @@
     <header class="site-header">
       <div class="shell site-header__inner">
         <a class="brand" href="{{ base_path }}/#cages" aria-label="Mouse Line home"><strong>Mouse Line</strong></a>
-        <nav class="primary-nav" aria-label="Main navigation"><a class="primary-nav__link is-active" href="{{ base_path }}/#cages">Cages</a><a class="primary-nav__link" href="{{ base_path }}/#new-cage">Create cage</a></nav>
+        <nav class="primary-nav" aria-label="Main navigation"><a class="primary-nav__link is-active" href="{{ back_url }}">Cages</a><a class="primary-nav__link" href="{{ base_path }}/#new-cage">Create cage</a></nav>
       </div>
     </header>
 
@@ -24,11 +24,11 @@
       {% set cage_status = cage.status or 'active' %}
       <section class="detail-heading">
         <div>
-          <a class="back-link" href="{{ base_path }}/#cages">← All cages</a>
+          <a class="back-link" href="{{ back_url }}">← All cages</a>
           <div class="title-line"><h1>{{ cage.cage_card_id or ('Cage ' ~ cage.id) }}</h1><span class="status status--{{ cage_status | lower | replace('_', '-') }}">{{ cage_status | replace('_', ' ') | title }}</span>{% if cage.is_breeding_pair %}<span class="cage-kind">Breeding pair</span>{% endif %}</div>
           <p class="lede">{{ cage.active_count }} active {% if cage.active_count == 1 %}mouse{% else %}mice{% endif %}</p>
         </div>
-        <form method="post" action="{{ base_path }}/cages/{{ cage.id }}/toggle" data-return-hash="#cage-details">
+        <form method="post" action="{{ base_path }}/cages/{{ cage.id }}/toggle{{ return_query }}" data-return-hash="#cage-details">
           <button class="button{% if cage_status == 'active' %} button--danger-quiet{% else %} button--primary{% endif %}" type="submit" {% if cage_status == 'active' %}data-confirm="Mark this cage inactive? Its history will remain available."{% endif %} data-pending-label="Saving…">{% if cage_status == 'active' %}Mark cage inactive{% else %}Reactivate cage{% endif %}</button>
         </form>
       </section>
@@ -41,12 +41,12 @@
         <div class="section-heading section-heading--compact">
           <div>
             <h2>Cage details</h2>
-            {% if cage.source_cage_id %}<p class="lineage-note"><span>Origin</span><a href="{{ base_path }}/cages/{{ cage.source_cage_id }}">{% if cage.creation_type == 'wean' %}Weaned from{% else %}Separated from{% endif %} {{ cage.source_cage_card_id or ('cage ' ~ cage.source_cage_id) }}</a></p>{% endif %}
+            {% if cage.source_cage_id %}<p class="lineage-note"><span>Origin</span><a href="{{ base_path }}/cages/{{ cage.source_cage_id }}{{ return_query }}">{% if cage.creation_type == 'wean' %}Weaned from{% else %}Separated from{% endif %} {{ cage.source_cage_card_id or ('cage ' ~ cage.source_cage_id) }}</a></p>{% endif %}
           </div>
         </div>
         <div class="overview-grid">
           <div class="cage-edit">
-            <form class="stack-form edit-cage-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/update" data-return-hash="#cage-details">
+            <form class="stack-form edit-cage-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/update{{ return_query }}" data-return-hash="#cage-details">
               <div class="form-grid form-grid--cage">
                 <label class="field field--span-2"><span>Cage card ID</span><input type="text" name="cage_card_id" value="{{ cage.cage_card_id or '' }}" maxlength="100" autocomplete="off" required></label>
                 <label class="field field--span-2"><span>Room{% if cage.room_alias %} <small>· {{ cage.room_alias }}</small>{% endif %}</span><input type="text" name="room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
@@ -63,10 +63,10 @@
             <h3 id="tags-title">Tags</h3>
             <div class="tag-list tag-list--roomy">
               {% for tag in cage.tags %}
-                <div class="tag tag--removable">{{ tag.name if tag.name is defined else tag }}{% if tag.id is defined %}<form method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags/{{ tag.id }}/remove" data-return-hash="#cage-details"><button type="submit" aria-label="Remove tag {{ tag.name }}" title="Remove tag">×</button></form>{% endif %}</div>
+                <div class="tag tag--removable">{{ tag.name if tag.name is defined else tag }}{% if tag.id is defined %}<form method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags/{{ tag.id }}/remove{{ return_query }}" data-return-hash="#cage-details"><button type="submit" aria-label="Remove tag {{ tag.name }}" title="Remove tag">×</button></form>{% endif %}</div>
               {% else %}<span class="muted">No tags</span>{% endfor %}
             </div>
-            <form class="inline-form tag-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags" data-return-hash="#cage-details">
+            <form class="inline-form tag-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/tags{{ return_query }}" data-return-hash="#cage-details">
               <label class="field field--grow"><span>Add tag</span><input name="tag_name" list="shared-tags" autocomplete="off" required><datalist id="shared-tags">{% for tag in all_tags %}<option value="{{ tag.name if tag.name is defined else tag }}"></option>{% endfor %}</datalist></label>
               <button class="button button--small" type="submit" data-pending-label="Adding…">Add</button>
             </form>
@@ -76,7 +76,7 @@
 
       <section id="cage-actions" class="panel action-panel" aria-labelledby="cage-actions-title">
         <div class="section-heading section-heading--compact"><div><h2 id="cage-actions-title">Add mice</h2></div></div>
-        <form class="action-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/add-mice" data-return-hash="#cage-actions">
+        <form class="action-form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/add-mice{{ return_query }}" data-return-hash="#cage-actions">
           <div class="action-form-grid">
             <label class="field"><span>Number</span><input type="number" name="count" min="1" max="100" step="1" value="1" required></label>
             <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
@@ -90,7 +90,7 @@
         <div class="disclosure-grid">
           <details class="disclosure">
             <summary><span>Split cage</span></summary>
-            <form id="split-form" class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/split" data-return-hash="#cage-actions">
+            <form id="split-form" class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/split{{ return_query }}" data-return-hash="#cage-actions">
               <div class="form-grid">
                 <label class="field"><span>New cage card ID <small>optional</small></span><input type="text" name="destination_cage_card_id" maxlength="100" autocomplete="off"></label>
                 <label class="field"><span>Room</span><input type="text" name="destination_room" value="{{ cage.room or '' }}" maxlength="100" autocomplete="off"></label>
@@ -103,7 +103,7 @@
           {% if cage.is_breeding_pair %}
           <details class="disclosure">
             <summary><span>Wean litter</span></summary>
-            <form class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/wean" data-return-hash="#cage-actions">
+            <form class="stack-form disclosure__body" method="post" action="{{ base_path }}/cages/{{ cage.id }}/wean{{ return_query }}" data-return-hash="#cage-actions">
               <div class="form-grid form-grid--four">
                 <label class="field"><span>Number</span><input type="number" name="count" min="1" max="100" step="1" value="1" required></label>
                 <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
@@ -127,22 +127,22 @@
           <details class="batch-edit">
             <summary>Batch edit all mice</summary>
             <div class="batch-edit__forms">
-              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change sex for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update{{ return_query }}" data-return-hash="#mice" data-confirm="Change sex for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
                 <input type="hidden" name="field" value="sex">
                 <label class="field"><span>Sex</span><select name="value" required><option value="" selected disabled>Select…</option><option value="F">♀ Female</option><option value="M">♂ Male</option><option value="U">Unknown</option></select></label>
                 <button class="button button--small" type="submit" aria-label="Apply sex to all mice" data-pending-label="Updating…">Apply</button>
               </form>
-              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change genotype for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update{{ return_query }}" data-return-hash="#mice" data-confirm="Change genotype for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
                 <input type="hidden" name="field" value="genotype">
                 <label class="field"><span>Genotype</span><input type="text" name="value" autocomplete="off" required></label>
                 <button class="button button--small" type="submit" aria-label="Apply genotype to all mice" data-pending-label="Updating…">Apply</button>
               </form>
-              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change date of birth for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update{{ return_query }}" data-return-hash="#mice" data-confirm="Change date of birth for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
                 <input type="hidden" name="field" value="dob">
                 <label class="field"><span>Date of birth</span><input type="date" name="value" required></label>
                 <button class="button button--small" type="submit" aria-label="Apply date of birth to all mice" data-pending-label="Updating…">Apply</button>
               </form>
-              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update" data-return-hash="#mice" data-confirm="Change mouse user for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
+              <form class="batch-edit__form" method="post" action="{{ base_path }}/cages/{{ cage.id }}/animals/batch-update{{ return_query }}" data-return-hash="#mice" data-confirm="Change mouse user for all {{ animals | length }} mice in this cage{% if animals | length > cage.active_count %}, including inactive records{% endif %}?">
                 <input type="hidden" name="field" value="mouse_user">
                 <label class="field"><span>Mouse user</span><input type="text" name="value" list="mouse-user-options" maxlength="100" placeholder="Leave blank to clear" autocomplete="off"></label>
                 <button class="button button--small" type="submit" aria-label="Apply mouse user to all mice" data-pending-label="Updating…">Apply</button>
@@ -157,12 +157,12 @@
                   <label class="select-animal" title="Select for cage split"><input class="animal-selector" type="checkbox" name="animal_ids" value="{{ animal.id }}" form="split-form"{% if animal_status != 'active' %} disabled{% endif %}><span class="sr-only">Select {{ animal.public_id }} for split</span></label>
                   <div class="animal-identity"><strong>{{ animal.public_id }}</strong><span class="animal-age">Age <span data-birth-date="{{ animal.dob or '' }}">{{ animal.age_display or 'Unknown' }}</span></span></div>
                   <span class="status status--{{ animal_status | lower | replace('_', '-') }}">{{ animal_status | title }}</span>
-                  <form class="animal-status-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/toggle" data-return-hash="#mouse-{{ animal.id }}"><button class="button button--small button--quiet" type="submit" {% if animal_status == 'active' %}data-confirm="Remove {{ animal.public_id }}? Its history will remain available."{% endif %} data-pending-label="Saving…">{% if animal_status == 'active' %}Remove mouse{% else %}Restore mouse{% endif %}</button></form>
+                  <form class="animal-status-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/toggle{{ return_query }}" data-return-hash="#mouse-{{ animal.id }}"><button class="button button--small button--quiet" type="submit" {% if animal_status == 'active' %}data-confirm="Remove {{ animal.public_id }}? Its history will remain available."{% endif %} data-pending-label="Saving…">{% if animal_status == 'active' %}Remove mouse{% else %}Restore mouse{% endif %}</button></form>
                 </header>
 
                 <section class="animal-edit" aria-labelledby="edit-mouse-{{ animal.id }}">
                   <h3 id="edit-mouse-{{ animal.id }}" class="sr-only">Mouse details</h3>
-                  <form class="edit-animal-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/update" data-return-hash="#mouse-{{ animal.id }}">
+                  <form class="edit-animal-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/update{{ return_query }}" data-return-hash="#mouse-{{ animal.id }}">
                     <div class="mouse-detail-grid">
                       <label class="field"><span>Previous mouse ID</span><input type="text" name="legacy_id" value="{{ animal.legacy_id or '' }}" maxlength="100" autocomplete="off"></label>
                       <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" value="{{ animal.mouse_user or '' }}" maxlength="100" autocomplete="off"></label>
@@ -184,7 +184,7 @@
                       <div class="surgery-table__head" aria-hidden="true"><span>Type</span><span>Date</span><span>Time</span><span>Operator</span><span></span></div>
                       <div class="surgery-list">
                         {% for surgery in animal.surgeries %}
-                          <form class="surgery-row surgery-row--editable" method="post" action="{{ base_path }}/surgeries/{{ surgery.id }}/update" data-return-hash="#mouse-{{ animal.id }}" aria-label="Edit surgery from {{ surgery.surgery_date or surgery.date }}">
+                          <form class="surgery-row surgery-row--editable" method="post" action="{{ base_path }}/surgeries/{{ surgery.id }}/update{{ return_query }}" data-return-hash="#mouse-{{ animal.id }}" aria-label="Edit surgery from {{ surgery.surgery_date or surgery.date }}">
                             <label class="field"><span class="surgery-field-label">Type</span><input name="surgery_type" list="surgery-types-{{ animal.id }}" value="{{ surgery.surgery_type or surgery.type or '' }}" autocomplete="off" required></label>
                             <label class="field"><span class="surgery-field-label">Date</span><input type="date" name="surgery_date" value="{{ surgery.surgery_date or surgery.date or '' }}" required></label>
                             <label class="field"><span class="surgery-field-label">Time</span><input type="time" name="surgery_time" value="{{ surgery.surgery_time or surgery.time or '' }}"></label>
@@ -199,7 +199,7 @@
                   {% if animal.surgeries | length < 4 %}
                     <details class="mini-disclosure">
                       <summary>Add surgery</summary>
-                      <form class="surgery-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/surgery" data-return-hash="#mouse-{{ animal.id }}">
+                      <form class="surgery-form" method="post" action="{{ base_path }}/animals/{{ animal.id }}/surgery{{ return_query }}" data-return-hash="#mouse-{{ animal.id }}">
                         <label class="field"><span>Type</span><input name="surgery_type" list="surgery-types-{{ animal.id }}" autocomplete="off" required></label>
                         <label class="field"><span>Date</span><input type="date" name="surgery_date" required></label>
                         <label class="field"><span>Time</span><input type="time" name="surgery_time"></label>

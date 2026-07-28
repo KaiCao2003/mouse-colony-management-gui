@@ -204,6 +204,15 @@
     }
   }
 
+  window.addEventListener("pageshow", () => {
+    for (const form of document.querySelectorAll('form[data-submitting="true"]')) {
+      if (!(form instanceof HTMLFormElement)) continue;
+      const submitter = form.querySelector("[data-original-label]");
+      delete form.dataset.submitting;
+      pendingState(form, false, submitter);
+    }
+  });
+
   document.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement) || form.method.toLowerCase() !== "post") return;
@@ -255,6 +264,16 @@
         throw new Error("The server returned an unexpected redirect.");
       }
       if (/^#[A-Za-z][A-Za-z0-9:_.-]*$/.test(returnHash)) target.hash = returnHash;
+      const current = new URL(window.location.href);
+      if (
+        target.origin === current.origin &&
+        target.pathname === current.pathname &&
+        target.search === current.search
+      ) {
+        window.history.replaceState(window.history.state, "", target.href);
+        window.location.reload();
+        return;
+      }
       window.location.assign(target.href);
     } catch (error) {
       form.dataset.submitting = "false";

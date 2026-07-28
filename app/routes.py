@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -22,6 +22,17 @@ _BATCH_ANIMAL_FIELD_LABELS = {
 _CAGE_FILTER_STATUSES = {"all", "active", "inactive", "on_order"}
 _CAGE_SORT_FIELDS = {"cage_card_id", "room", "status"}
 _SORT_DIRECTIONS = {"asc", "desc"}
+_CAGE_VIEWS = {"all", "stock", "using", "breeding"}
+_CAGE_RETURN_QUERY_KEYS = {
+    "view",
+    "search",
+    "status",
+    "tag",
+    "mouse_user",
+    "room",
+    "sort",
+    "direction",
+}
 
 
 def _db(request: Request) -> Database:
@@ -37,6 +48,50 @@ def _app_path(request: Request, path: str) -> str:
     return f"{_base_path(request)}{normalized_path}"
 
 
+def _cage_return_url(request: Request, value: str) -> str:
+    fallback = _app_path(request, "/#cages")
+    candidate = value.strip()
+    if not candidate or len(candidate) > 2048:
+        return fallback
+    if "\\" in candidate or any(ord(character) < 32 for character in candidate):
+        return fallback
+
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return fallback
+    if parsed.scheme or parsed.netloc or parsed.path != _app_path(request, "/"):
+        return fallback
+    if parsed.fragment not in {"", "cages"}:
+        return fallback
+
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    query_keys = [key for key, _value in query_pairs]
+    if len(query_keys) != len(set(query_keys)):
+        return fallback
+    if any(key not in _CAGE_RETURN_QUERY_KEYS for key in query_keys):
+        return fallback
+    if any(
+        "\\" in item or any(ord(character) < 32 for character in item)
+        for pair in query_pairs
+        for item in pair
+    ):
+        return fallback
+
+    query_values = dict(query_pairs)
+    if query_values.get("view", "all") not in _CAGE_VIEWS:
+        return fallback
+    if query_values.get("status", "all") not in _CAGE_FILTER_STATUSES:
+        return fallback
+    if query_values.get("sort", "status") not in _CAGE_SORT_FIELDS:
+        return fallback
+    if query_values.get("direction", "asc") not in _SORT_DIRECTIONS:
+        return fallback
+
+    query = f"?{urlencode(query_pairs)}" if query_pairs else ""
+    return f"{parsed.path}{query}#cages"
+
+
 def _redirect(
     request: Request,
     path: str,
@@ -46,7 +101,13 @@ def _redirect(
 ) -> RedirectResponse:
     path_without_fragment, hash_marker, fragment = path.partition("#")
     separator = "&" if "?" in path_without_fragment else "?"
-    query = urlencode({"message": message, "kind": kind})
+    query_values = {"message": message, "kind": kind}
+    if "return_to" in request.query_params:
+        query_values["return_to"] = _cage_return_url(
+            request,
+            request.query_params.get("return_to", ""),
+        )
+    query = urlencode(query_values)
     location = f"{_app_path(request, path_without_fragment)}{separator}{query}"
     if hash_marker:
         location = f"{location}#{fragment}"
@@ -143,6 +204,17 @@ def index(
         direction=canonical_direction,
         view=canonical_view,
     )
+    view_urls = _cage_view_urls(
+        request,
+        search=search,
+        status=canonical_status,
+        tag=tag,
+        mouse_user=cleaned_mouse_user or "",
+        room=cleaned_room or "",
+        sort=canonical_sort,
+        direction=canonical_direction,
+    )
+    cage_return_to = view_urls[canonical_view]
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -164,16 +236,14 @@ def index(
                 "direction": canonical_direction,
                 "view": canonical_view,
             },
-            "view_urls": _cage_view_urls(
-                request,
-                search=search,
-                status=canonical_status,
-                tag=tag,
-                mouse_user=cleaned_mouse_user or "",
-                room=cleaned_room or "",
-                sort=canonical_sort,
-                direction=canonical_direction,
-            ),
+            "view_urls": view_urls,
+            "cage_detail_urls": {
+                cage["id"]: _app_path(
+                    request,
+                    f"/cages/{cage['id']}?{urlencode({'return_to': cage_return_to})}",
+                )
+                for cage in cages
+            },
             "message": message,
             "message_kind": kind,
             "seed_report": request.app.state.seed_report,
@@ -185,6 +255,7 @@ def index(
 def cage_detail(
     cage_id: int,
     request: Request,
+    return_to: str = "",
     message: str = "",
     kind: str = "success",
 ) -> HTMLResponse:
@@ -192,11 +263,14 @@ def cage_detail(
     cage = database.get_cage(cage_id)
     if cage is None:
         raise HTTPException(status_code=404, detail="Cage not found.")
+    back_url = _cage_return_url(request, return_to)
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="cage.html",
         context={
             "base_path": _base_path(request),
+            "back_url": back_url,
+            "return_query": f"?{urlencode({'return_to': back_url})}",
             "csrf_token": csrf_token_for_request(request),
             "cage": cage,
             "animals": database.list_animals(cage_id, include_inactive=True),
