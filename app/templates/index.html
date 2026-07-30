@@ -17,10 +17,13 @@
     <header class="site-header">
       <div class="shell site-header__inner">
         <a class="brand" href="{{ base_path }}/#cages" aria-label="Mouse Line home"><strong>Mouse Line</strong></a>
-        <nav class="primary-nav" aria-label="Workspace tabs" role="tablist">
-          <a id="workspace-tab-cages" class="primary-nav__link is-active" href="{{ base_path }}/#cages" role="tab" aria-controls="cages" aria-selected="true" data-workspace-tab-link="cages">Cages</a>
-          <a id="workspace-tab-new-cage" class="primary-nav__link" href="{{ base_path }}/#new-cage" role="tab" aria-controls="new-cage" aria-selected="false" data-workspace-tab-link="new-cage">Create cage</a>
-        </nav>
+        <div class="site-header__actions">
+          <nav class="primary-nav" aria-label="Workspace tabs" role="tablist">
+            <a id="workspace-tab-cages" class="primary-nav__link is-active" href="{{ base_path }}/#cages" role="tab" aria-controls="cages" aria-selected="true" data-workspace-tab-link="cages">Cages</a>
+            <a id="workspace-tab-new-cage" class="primary-nav__link" href="{{ base_path }}/#new-cage" role="tab" aria-controls="new-cage" aria-selected="false" data-workspace-tab-link="new-cage">Create cage</a>
+          </nav>
+          <form class="session-form" method="post" action="{{ base_path }}/logout"><button class="session-link" type="submit" data-pending-label="Signing out…">Log out</button></form>
+        </div>
       </div>
     </header>
 
@@ -61,7 +64,7 @@
           <label class="field">
             <span>Status</span>
             <select name="status">
-              <option value="all"{% if not filters.status or filters.status == 'all' %} selected{% endif %}>All statuses</option>
+              <option value="all"{% if filters.status == 'all' %} selected{% endif %}>All statuses</option>
               <option value="active"{% if filters.status == 'active' %} selected{% endif %}>Active</option>
               <option value="inactive"{% if filters.status == 'inactive' %} selected{% endif %}>Inactive</option>
               <option value="on_order"{% if filters.status == 'on_order' %} selected{% endif %}>On order</option>
@@ -109,6 +112,7 @@
                   <th scope="col">Sex</th>
                   <th scope="col">Genotype</th>
                   <th scope="col">Tags</th>
+                  <th scope="col">Last changed</th>
                   <th scope="col" data-sort-field="status"{% if status_sort_active %} aria-sort="{% if filters.direction == 'desc' %}descending{% else %}ascending{% endif %}"{% endif %}>
                     <a class="sort-link{% if status_sort_active %} is-active{% endif %}" href="{{ sort_urls.status }}">
                       <span>Status</span>{% if status_sort_active %}<span class="sort-indicator" aria-hidden="true">{% if filters.direction == 'desc' %}↓{% else %}↑{% endif %}</span>{% endif %}
@@ -128,6 +132,7 @@
                     <td data-label="Sex">{% if cage.male_count or cage.female_count or cage.unknown_count %}<span class="sex-breakdown">{% if cage.male_count %}<span class="sex-count" role="img" aria-label="{{ cage.male_count }} male {% if cage.male_count == 1 %}mouse{% else %}mice{% endif %}"><span aria-hidden="true">♂ {{ cage.male_count }}</span></span>{% endif %}{% if cage.female_count %}<span class="sex-count" role="img" aria-label="{{ cage.female_count }} female {% if cage.female_count == 1 %}mouse{% else %}mice{% endif %}"><span aria-hidden="true">♀ {{ cage.female_count }}</span></span>{% endif %}{% if cage.unknown_count %}<span class="sex-count">Unknown {{ cage.unknown_count }}</span>{% endif %}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
                     <td data-label="Genotype">{{ cage.genotype or '—' }}</td>
                     <td data-label="Tags"><div class="tag-list">{% for tag in cage.tags %}<span class="tag">{{ tag.name if tag.name is defined else tag }}</span>{% else %}<span class="muted">—</span>{% endfor %}</div></td>
+                    <td class="last-changed-cell" data-label="Last changed"><time datetime="{{ cage.last_changed_date }}">{{ cage.last_changed_date }}</time></td>
                     <td data-label="Status"><span class="status status--{{ cage_status | lower | replace('_', '-') }}">{{ cage_status | replace('_', ' ') | title }}</span></td>
                   </tr>
                 {% endfor %}
@@ -157,7 +162,7 @@
               <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" maxlength="100" autocomplete="off"></label>
               <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
               <label class="field field--wide"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
-              <label class="field"><span>Room</span><input type="text" name="room" list="room-options" maxlength="100" autocomplete="off"></label>
+              <label class="field"><span>Room</span><select name="room"><option value="" selected>No room</option>{% for room in room_options %}<option value="{{ room }}">{{ room }}</option>{% endfor %}</select></label>
               <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"><span><strong>Breeding pair</strong></span></label>
               <label class="field field--full"><span>Note</span><textarea name="note" rows="2" maxlength="4000"></textarea></label>
             </div>

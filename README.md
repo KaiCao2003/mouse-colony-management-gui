@@ -1,6 +1,6 @@
 # Mouse Colony Management GUI
 
-A simple, no-login mouse colony tracker. It listens on loopback by default at
+A simple mouse colony tracker with a shared lab-access question. It listens on loopback by default at
 `http://127.0.0.1:8765` and can also sit behind a trusted local reverse proxy.
 
 An optional cage-card CSV supplies cage identity, status, counts, room, and
@@ -22,8 +22,8 @@ after import.
 - Configurable room aliases for Regular Cycle, Reverse Cycle, and Breeding Core
 - Simple surgery records: date, time, operator, and type (maximum four per mouse)
 
-There are no accounts or logins. Everyone using this local page sees and edits
-the same database.
+There are no individual accounts. Everyone who passes the shared login sees and
+edits the same database, and every application route is gated by that session.
 
 `Stock mice` means active mice still housed in a non-breeding cage with more
 than one active mouse. Breeding pairs can be assigned manually or derived from
@@ -54,7 +54,8 @@ MOUSELINE_ALLOWED_HOSTS=127.0.0.1,localhost,colony.example.test
 ```
 
 The proxy should strip `/colony` before forwarding to the loopback application.
-Because there are no user accounts, expose it only on a trusted network.
+The shared login is not a substitute for network access control, so expose the
+application only on a trusted network.
 
 ## Data safety
 

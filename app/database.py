@@ -10,7 +10,7 @@ import string
 import threading
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -649,12 +649,13 @@ class Database:
         source = self.get_cage(source_cage_id)
         if source is None:
             raise ValueError("Source cage not found.")
+        wean_dob = dob or (date.today() - timedelta(days=21)).isoformat()
         return self.create_cage(
             cage_card_id=cage_card_id,
             status="active",
             animal_count=count,
             sex=sex,
-            dob=dob,
+            dob=wean_dob,
             genotype=genotype,
             mouse_user=mouse_user,
             room=room if room is not None else source.get("room"),
@@ -928,19 +929,55 @@ class Database:
         field: str,
         value: str | None,
     ) -> int:
-        validated_value: str | None
         if field == "sex":
-            if value is None:
+            return self.batch_update_animal_properties(cage_id, {"sex": value})
+        if field == "genotype":
+            return self.batch_update_animal_properties(cage_id, {"genotype": value})
+        if field == "dob":
+            return self.batch_update_animal_properties(cage_id, {"dob": value})
+        if field == "mouse_user":
+            return self.batch_update_animal_properties(cage_id, {"mouse_user": value})
+        raise ValueError("Mouse field must be sex, genotype, dob, or mouse_user.")
+
+    def batch_update_animal_properties(
+        self,
+        cage_id: int,
+        properties: Mapping[str, str | None],
+    ) -> int:
+        """Update one or more mouse properties for a cage in one transaction."""
+
+        allowed_fields = {"sex", "genotype", "dob", "mouse_user"}
+        if unknown_fields := set(properties) - allowed_fields:
+            names = ", ".join(sorted(unknown_fields))
+            raise ValueError(f"Unsupported mouse properties: {names}.")
+        assignments: list[str] = []
+        values: list[str | None] = []
+        if "sex" in properties:
+            sex = properties["sex"]
+            if sex is None:
                 raise ValueError("Sex must be M, F, or U.")
-            validated_value = self._validate_sex(value)
-        elif field == "genotype":
-            validated_value = self._clean(value)
-        elif field == "dob":
-            validated_value = self._validate_date(value, "DOB")
-        elif field == "mouse_user":
-            validated_value = self._validate_optional_text(value, "Mouse user", 100)
-        else:
-            raise ValueError("Mouse field must be sex, genotype, dob, or mouse_user.")
+            assignments.append("sex = ?")
+            values.append(self._validate_sex(sex))
+        if "genotype" in properties:
+            genotype = properties["genotype"]
+            assignments.append("genotype = ?")
+            values.append(self._clean(genotype))
+        if "dob" in properties:
+            dob = properties["dob"]
+            assignments.append("dob = ?")
+            values.append(self._validate_date(dob, "DOB"))
+        if "mouse_user" in properties:
+            mouse_user = properties["mouse_user"]
+            assignments.append("mouse_user = ?")
+            values.append(
+                self._validate_optional_text(
+                    mouse_user,
+                    "Mouse user",
+                    100,
+                )
+            )
+        if not assignments:
+            raise ValueError("Choose at least one mouse property to update.")
 
         with self.transaction() as connection:
             cage = connection.execute(
@@ -952,10 +989,10 @@ class Database:
             cursor = connection.execute(
                 f"""
                 UPDATE animals
-                SET {field} = ?, updated_at = CURRENT_TIMESTAMP
+                SET {", ".join(assignments)}, updated_at = CURRENT_TIMESTAMP
                 WHERE cage_id = ?
                 """,
-                (validated_value, cage_id),
+                (*values, cage_id),
             )
             return int(cursor.rowcount)
 
@@ -1047,18 +1084,28 @@ class Database:
                 "SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE",
                 (clean_name,),
             ).fetchone()
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT OR IGNORE INTO cage_tags(cage_id, tag_id) VALUES (?, ?)",
                 (cage_id, tag["id"]),
             )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE cages SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (cage_id,),
+                )
             return dict(tag)
 
     def remove_tag(self, cage_id: int, tag_id: int) -> None:
         with self.transaction() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 "DELETE FROM cage_tags WHERE cage_id = ? AND tag_id = ?",
                 (cage_id, tag_id),
             )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE cages SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (cage_id,),
+                )
 
     def list_tags(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -1130,6 +1177,10 @@ class Database:
                         "This mouse already has the maximum 4 surgery records."
                     ) from exc
                 raise
+            connection.execute(
+                "UPDATE animals SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (animal_id,),
+            )
             return self._lastrowid(cursor)
 
     def get_surgery(self, surgery_id: int) -> dict[str, Any] | None:
@@ -1203,9 +1254,28 @@ class Database:
                 """,
                 (validated_date, validated_time, operator_id, type_id, surgery_id),
             )
+            connection.execute(
+                "UPDATE animals SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (surgery["animal_id"],),
+            )
         result = self.get_surgery(surgery_id)
         assert result is not None
         return result
+
+    def remove_surgery(self, surgery_id: int) -> None:
+        with self.transaction() as connection:
+            surgery = connection.execute(
+                "SELECT animal_id FROM surgeries WHERE id = ?",
+                (surgery_id,),
+            ).fetchone()
+            if surgery is None:
+                raise ValueError("Surgery record not found.")
+            cursor = connection.execute("DELETE FROM surgeries WHERE id = ?", (surgery_id,))
+            assert cursor.rowcount == 1
+            connection.execute(
+                "UPDATE animals SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (surgery["animal_id"],),
+            )
 
     def list_operators(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -1319,6 +1389,14 @@ class Database:
             ).fetchall()
             return [str(row["value"]) for row in rows]
 
+    def list_room_options(self) -> list[str]:
+        """Return configured and previously used rooms for form select controls."""
+
+        rooms: dict[str, str] = {}
+        for room in (*self._room_aliases, *self.list_rooms()):
+            rooms.setdefault(room.casefold(), room)
+        return sorted(rooms.values(), key=lambda room: (room.casefold(), room))
+
     def _tags_for_cage(self, cage_id: int) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             """
@@ -1342,6 +1420,27 @@ class Database:
             (cage_id,),
         ).fetchall()
         return [str(row["value"]) for row in rows]
+
+    def _last_changed_at_for_cage(self, cage_id: int) -> str:
+        row = self.connection.execute(
+            """
+            SELECT MAX(changed_at) AS last_changed_at
+            FROM (
+                SELECT updated_at AS changed_at FROM cages WHERE id = ?
+                UNION ALL
+                SELECT updated_at FROM animals WHERE cage_id = ?
+                UNION ALL
+                SELECT occurred_at FROM movements
+                WHERE from_cage_id = ? OR to_cage_id = ?
+                UNION ALL
+                SELECT s.created_at FROM surgeries s
+                JOIN animals a ON a.id = s.animal_id
+                WHERE a.cage_id = ?
+            )
+            """,
+            (cage_id, cage_id, cage_id, cage_id, cage_id),
+        ).fetchone()
+        return str(row["last_changed_at"] or "")
 
     def _cage_record(self, row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
@@ -1396,6 +1495,8 @@ class Database:
         else:
             result["mouse_user"] = None
         result["tags"] = self._tags_for_cage(cage_id)
+        result["last_changed_at"] = self._last_changed_at_for_cage(cage_id)
+        result["last_changed_date"] = result["last_changed_at"][:10]
         return result
 
     def get_cage(self, cage_id: int) -> dict[str, Any] | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -458,6 +459,13 @@ def test_cage_user_and_room_filters_include_inactive_history(database: Database)
     assert blank is not None and blank["mouse_users"] == [] and blank["mouse_user"] is None
     assert database.list_mouse_users() == ["Alice", "Bob"]
     assert database.list_rooms() == ["Room Alpha", "Room Beta"]
+    assert set(database.list_room_options()) == {
+        "ROOM-REGULAR",
+        "ROOM-REVERSE",
+        "ROOM-BREEDING",
+        "Room Alpha",
+        "Room Beta",
+    }
 
 
 def test_cage_sorting_is_allowlisted_directional_and_deterministic(database: Database) -> None:
@@ -632,6 +640,48 @@ def test_batch_update_animals_validates_cage_field_and_value(database: Database)
     assert animal["genotype"] == "Keep"
 
 
+def test_batch_update_animal_properties_saves_multiple_fields_atomically(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="BATCH-MULTI",
+        animal_count=2,
+        sex="M",
+        dob="2026-01-02",
+        genotype="Original",
+        mouse_user="Original owner",
+    )
+
+    assert (
+        database.batch_update_animal_properties(
+            cage_id,
+            {
+                "sex": "F",
+                "dob": "2026-02-03",
+                "genotype": "Het",
+                "mouse_user": None,
+            },
+        )
+        == 2
+    )
+    animals = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["sex"] for animal in animals} == {"F"}
+    assert {animal["dob"] for animal in animals} == {"2026-02-03"}
+    assert {animal["genotype"] for animal in animals} == {"Het"}
+    assert {animal["mouse_user"] for animal in animals} == {None}
+
+    with pytest.raises(ValueError, match="DOB must be a valid date"):
+        database.batch_update_animal_properties(
+            cage_id,
+            {"sex": "M", "dob": "not-a-date"},
+        )
+    unchanged = database.list_animals(cage_id, include_inactive=True)
+    assert {animal["sex"] for animal in unchanged} == {"F"}
+
+    with pytest.raises(ValueError, match="Choose at least one"):
+        database.batch_update_animal_properties(cage_id, {})
+
+
 def test_active_split_cage_keeps_family_letter_reserved(database: Database) -> None:
     source_id = database.create_cage(cage_card_id="ROOT-A", animal_count=2)
     original_letter = database.get_cage(source_id)["family_letter"]  # type: ignore[index]
@@ -651,8 +701,15 @@ def test_active_split_cage_keeps_family_letter_reserved(database: Database) -> N
     assert unrelated["family_letter"] != original_letter
 
 
-def test_split_retains_ids_and_family_and_updates_counts(database: Database) -> None:
-    source_id = database.create_cage(cage_card_id="CC00000002", animal_count=3)
+def test_split_retains_ids_family_and_mouse_properties(database: Database) -> None:
+    source_id = database.create_cage(
+        cage_card_id="CC00000002",
+        animal_count=3,
+        sex="F",
+        dob="2026-01-02",
+        genotype="WT",
+        mouse_user="Mouse owner",
+    )
     source = database.get_cage(source_id)
     animals = database.list_animals(source_id)
     selected = animals[:2]
@@ -671,6 +728,10 @@ def test_split_retains_ids_and_family_and_updates_counts(database: Database) -> 
     assert destination["active_count"] == 2
     assert destination["family_letter"] == source["family_letter"]
     assert {mouse["public_id"] for mouse in moved} == {mouse["public_id"] for mouse in selected}
+    assert {mouse["dob"] for mouse in moved} == {"2026-01-02"}
+    assert {mouse["sex"] for mouse in moved} == {"F"}
+    assert {mouse["genotype"] for mouse in moved} == {"WT"}
+    assert {mouse["mouse_user"] for mouse in moved} == {"Mouse owner"}
 
 
 def test_split_all_mice_marks_source_inactive(database: Database) -> None:
@@ -709,6 +770,22 @@ def test_wean_creates_new_family_without_changing_source_count(database: Databas
     assert destination["family_letter"] != source["family_letter"]
     assert {pup["family_letter"] for pup in pups} == {destination["family_letter"]}
     assert {pup["dob"] for pup in pups} == {"2026-07-01"}
+
+
+def test_wean_defaults_dob_to_21_days_before_today(database: Database) -> None:
+    source_id = database.create_cage(cage_card_id="BREED-AUTO-DOB", animal_count=2)
+
+    destination_id = database.wean_cage(
+        source_id,
+        count=2,
+        sex="U",
+        dob=None,
+        genotype=None,
+        cage_card_id="WEAN-AUTO-DOB",
+    )
+
+    expected_dob = (date.today() - timedelta(days=21)).isoformat()
+    assert {mouse["dob"] for mouse in database.list_animals(destination_id)} == {expected_dob}
 
 
 def test_imported_split_lineage_preserves_suffixes_and_is_idempotent(
@@ -894,6 +971,10 @@ def test_existing_surgery_can_be_updated_without_using_another_record(
         assert surgery_id is not None
         surgery_ids.append(surgery_id)
 
+    database.connection.execute(
+        "UPDATE animals SET updated_at = '2000-01-01 00:00:00' WHERE id = ?",
+        (animal_id,),
+    )
     updated = database.update_surgery(
         surgery_ids[0],
         surgery_date="2026-06-07",
@@ -913,6 +994,7 @@ def test_existing_surgery_can_be_updated_without_using_another_record(
         "surgery_type": "Probe implant",
     }
     assert animal is not None
+    assert animal["updated_at"] != "2000-01-01 00:00:00"
     assert len(animal["surgeries"]) == 4
     assert {surgery["id"] for surgery in animal["surgeries"]} == set(surgery_ids)
 
@@ -934,10 +1016,95 @@ def test_existing_surgery_can_be_updated_without_using_another_record(
         )
 
 
+def test_surgery_record_can_be_removed_and_frees_a_slot(database: Database) -> None:
+    cage_id = database.create_cage(cage_card_id="SURGERY-REMOVE", animal_count=1)
+    animal_id = int(database.list_animals(cage_id)[0]["id"])
+    surgery_ids = [
+        database.add_surgery(
+            animal_id,
+            surgery_date=f"2026-06-{index + 1:02d}",
+            surgery_time=None,
+            operator="Operator",
+            surgery_type="Headplate",
+        )
+        for index in range(4)
+    ]
+    removed_id = surgery_ids[1]
+    assert removed_id is not None
+
+    database.connection.execute(
+        "UPDATE animals SET updated_at = '2000-01-01 00:00:00' WHERE id = ?",
+        (animal_id,),
+    )
+    database.remove_surgery(removed_id)
+
+    assert database.get_surgery(removed_id) is None
+    animal = database.get_animal(animal_id)
+    assert animal is not None and len(animal["surgeries"]) == 3
+    assert animal["updated_at"] != "2000-01-01 00:00:00"
+    replacement_id = database.add_surgery(
+        animal_id,
+        surgery_date="2026-06-05",
+        surgery_time=None,
+        operator="Operator",
+        surgery_type="Headplate",
+    )
+    assert replacement_id is not None
+    with pytest.raises(ValueError, match="Surgery record not found"):
+        database.remove_surgery(999_999)
+
+
 def test_tags_are_shared_and_filter_cages(database: Database) -> None:
     first = database.create_cage(cage_card_id="CC00000008")
     database.create_cage(cage_card_id="CC00000009")
+    database.connection.execute(
+        "UPDATE cages SET updated_at = '2000-01-01 00:00:00' WHERE id = ?",
+        (first,),
+    )
     database.add_tag(first, "experiment-a")
 
     cages = database.list_cages(tag="experiment-a")
     assert [cage["id"] for cage in cages] == [first]
+    assert cages[0]["updated_at"] != "2000-01-01 00:00:00"
+
+
+def test_cage_last_changed_uses_latest_related_activity(database: Database) -> None:
+    cage_id = database.create_cage(cage_card_id="LAST-CHANGED", animal_count=1)
+    animal_id = int(database.list_animals(cage_id)[0]["id"])
+    surgery_id = database.add_surgery(
+        animal_id,
+        surgery_date="2026-06-01",
+        surgery_time=None,
+        operator="Operator",
+        surgery_type="Headplate",
+    )
+    assert surgery_id is not None
+
+    database.connection.execute(
+        "UPDATE cages SET updated_at = '2020-01-01 00:00:00' WHERE id = ?",
+        (cage_id,),
+    )
+    database.connection.execute(
+        "UPDATE animals SET updated_at = '2022-02-02 00:00:00' WHERE id = ?",
+        (animal_id,),
+    )
+    database.connection.execute(
+        "UPDATE surgeries SET created_at = '2023-03-03 00:00:00' WHERE id = ?",
+        (surgery_id,),
+    )
+    database.connection.execute(
+        "UPDATE movements SET occurred_at = '2021-01-01 00:00:00' WHERE animal_id = ?",
+        (animal_id,),
+    )
+
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert cage["last_changed_at"] == "2023-03-03 00:00:00"
+    assert cage["last_changed_date"] == "2023-03-03"
+
+    database.connection.execute(
+        "UPDATE movements SET occurred_at = '2024-04-04 00:00:00' WHERE animal_id = ?",
+        (animal_id,),
+    )
+    cage = database.get_cage(cage_id)
+    assert cage is not None and cage["last_changed_date"] == "2024-04-04"

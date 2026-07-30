@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="referrer" content="no-referrer">
+    <title>Sign in · Mouse Line</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-card" aria-labelledby="login-title">
+        <header class="login-heading">
+          <p class="login-brand">Mouse Line</p>
+          <h1 id="login-title">Lab access</h1>
+        </header>
+
+        {% if error %}<div id="login-error" class="login-error" role="alert">That answer is not correct.</div>{% endif %}
+
+        <form class="login-form" method="post" action="{{ base_path }}/login">
+          <input type="hidden" name="next" value="{{ return_to }}">
+          <label class="field login-question">
+            <span>What's the PI's first name?</span>
+            <input type="password" name="answer" maxlength="100" autocomplete="off" autocapitalize="none" spellcheck="false"{% if error %} aria-invalid="true" aria-describedby="login-error"{% endif %} required autofocus>
+          </label>
+          <button class="button button--primary" type="submit">Continue</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

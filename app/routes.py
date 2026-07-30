@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Annotated, Any, Literal
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.database import Database
-from app.security import csrf_token_for_request
+from app.security import (
+    LOGIN_COOKIE_NAME,
+    LOGIN_SESSION_MAX_AGE_SECONDS,
+    LoginManager,
+    csrf_token_for_request,
+)
 
 router = APIRouter()
 
@@ -39,6 +45,10 @@ def _db(request: Request) -> Database:
     return request.app.state.database
 
 
+def _login_manager(request: Request) -> LoginManager:
+    return request.app.state.login_manager
+
+
 def _base_path(request: Request) -> str:
     return str(request.scope.get("root_path", "")).rstrip("/")
 
@@ -46,6 +56,37 @@ def _base_path(request: Request) -> str:
 def _app_path(request: Request, path: str) -> str:
     normalized_path = path if path.startswith("/") else f"/{path}"
     return f"{_base_path(request)}{normalized_path}"
+
+
+def _login_return_url(request: Request, value: str) -> str:
+    base_path = _base_path(request)
+    fallback = f"{base_path}/"
+    candidate = value.strip()
+    if not candidate or len(candidate) > 2048:
+        return fallback
+    if "\\" in candidate or any(ord(character) < 32 for character in candidate):
+        return fallback
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return fallback
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        return fallback
+    decoded_path = unquote(parsed.path)
+    if (
+        decoded_path.startswith("//")
+        or "\\" in decoded_path
+        or any(ord(character) < 32 for character in decoded_path)
+    ):
+        return fallback
+    required_prefix = f"{base_path}/" if base_path else "/"
+    if not parsed.path.startswith(required_prefix):
+        return fallback
+    route_path = parsed.path[len(base_path) :] if base_path else parsed.path
+    if route_path in {"/login", "/logout"} or route_path.startswith("/static/"):
+        return fallback
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.path}{query}"
 
 
 def _cage_return_url(request: Request, value: str) -> str:
@@ -81,7 +122,7 @@ def _cage_return_url(request: Request, value: str) -> str:
     query_values = dict(query_pairs)
     if query_values.get("view", "all") not in _CAGE_VIEWS:
         return fallback
-    if query_values.get("status", "all") not in _CAGE_FILTER_STATUSES:
+    if query_values.get("status", "active") not in _CAGE_FILTER_STATUSES:
         return fallback
     if query_values.get("sort", "status") not in _CAGE_SORT_FIELDS:
         return fallback
@@ -154,7 +195,7 @@ def _cage_list_url(
     query: dict[str, str] = {"view": view}
     if cleaned_search := _clean(search):
         query["search"] = cleaned_search
-    if status != "all":
+    if status != "active":
         query["status"] = status
     if cleaned_tag := _clean(tag):
         query["tag"] = cleaned_tag
@@ -236,11 +277,74 @@ def _cage_sort_urls(
     return urls
 
 
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "") -> Response:
+    return_to = _login_return_url(request, next)
+    if _login_manager(request).validate_session(request.cookies.get(LOGIN_COOKIE_NAME)):
+        return RedirectResponse(return_to, status_code=303)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={
+            "base_path": _base_path(request),
+            "return_to": return_to,
+            "error": False,
+        },
+    )
+
+
+@router.post("/login", response_class=HTMLResponse)
+def submit_login(
+    request: Request,
+    answer: Annotated[str, Form(max_length=100)] = "",
+    next: Annotated[str, Form(max_length=2048)] = "",
+) -> Response:
+    return_to = _login_return_url(request, next)
+    login_manager = _login_manager(request)
+    if not login_manager.validate_answer(answer):
+        return request.app.state.templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "base_path": _base_path(request),
+                "return_to": return_to,
+                "error": True,
+            },
+            status_code=401,
+        )
+
+    response = RedirectResponse(return_to, status_code=303)
+    response.set_cookie(
+        LOGIN_COOKIE_NAME,
+        login_manager.issue_session_token(),
+        max_age=LOGIN_SESSION_MAX_AGE_SECONDS,
+        path=_base_path(request) or "/",
+        secure=request.url.scheme == "https",
+        httponly=True,
+        samesite="strict",
+    )
+    return response
+
+
+@router.post("/logout")
+def logout(request: Request) -> RedirectResponse:
+    _login_manager(request).revoke_session(request.cookies.get(LOGIN_COOKIE_NAME))
+    response = RedirectResponse(_app_path(request, "/login"), status_code=303)
+    response.delete_cookie(
+        LOGIN_COOKIE_NAME,
+        path=_base_path(request) or "/",
+        secure=request.url.scheme == "https",
+        httponly=True,
+        samesite="strict",
+    )
+    return response
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(
     request: Request,
     search: str = "",
-    status: str = "all",
+    status: str = "active",
     tag: str = "",
     mouse_user: str = "",
     room: str = "",
@@ -252,7 +356,7 @@ def index(
 ) -> HTMLResponse:
     database = _db(request)
     canonical_view = "using" if view == "single" else view
-    canonical_status = _canonical_choice(status, _CAGE_FILTER_STATUSES, "all")
+    canonical_status = _canonical_choice(status, _CAGE_FILTER_STATUSES, "active")
     sort_candidate = sort.strip().casefold()
     sort_explicit = "sort" in request.query_params and sort_candidate in _CAGE_SORT_FIELDS
     canonical_sort = sort_candidate if sort_explicit else "status"
@@ -306,6 +410,7 @@ def index(
             "all_tags": database.list_tags(),
             "mouse_users": database.list_mouse_users(),
             "rooms": database.list_rooms(),
+            "room_options": database.list_room_options(),
             "filters": {
                 "search": search,
                 "status": canonical_status,
@@ -346,6 +451,7 @@ def cage_detail(
     if cage is None:
         raise HTTPException(status_code=404, detail="Cage not found.")
     back_url = _cage_return_url(request, return_to)
+    today = date.today()
     return request.app.state.templates.TemplateResponse(
         request=request,
         name="cage.html",
@@ -356,10 +462,13 @@ def cage_detail(
             "csrf_token": csrf_token_for_request(request),
             "cage": cage,
             "animals": database.list_animals(cage_id, include_inactive=True),
+            "room_options": database.list_room_options(),
             "all_tags": database.list_tags(),
             "mouse_users": database.list_mouse_users(),
             "operators": database.list_operators(),
             "surgery_types": database.list_surgery_types(),
+            "today": today.isoformat(),
+            "default_wean_dob": (today - timedelta(days=21)).isoformat(),
             "message": message,
             "message_kind": kind,
         },
@@ -483,7 +592,7 @@ def wean_cage(
             cage_id,
             count=count,
             sex=_sex(sex),
-            dob=_clean(dob),
+            dob=_clean(dob) or (date.today() - timedelta(days=21)).isoformat(),
             genotype=_clean(genotype),
             mouse_user=_clean(mouse_user),
             cage_card_id=_clean(destination_cage_card_id),
@@ -538,26 +647,83 @@ def update_cage(
 def batch_update_cage_animals(
     cage_id: int,
     request: Request,
-    field: Annotated[str, Form()],
-    value: Annotated[str, Form()] = "",
+    field: Annotated[str | None, Form()] = None,
+    value: Annotated[str | None, Form()] = None,
+    batch_mode: Annotated[str, Form()] = "",
+    sex: Annotated[str | None, Form()] = None,
+    genotype: Annotated[str | None, Form()] = None,
+    dob: Annotated[str | None, Form()] = None,
+    mouse_user: Annotated[str | None, Form()] = None,
+    change_sex: Annotated[bool, Form()] = False,
+    change_genotype: Annotated[bool, Form()] = False,
+    change_dob: Annotated[bool, Form()] = False,
+    change_mouse_user: Annotated[bool, Form()] = False,
 ) -> RedirectResponse:
-    normalized_field = field.strip().casefold()
-    field_label = _BATCH_ANIMAL_FIELD_LABELS.get(normalized_field)
-    if field_label is None:
+    if field is not None:
+        normalized_field = field.strip().casefold()
+        field_label = _BATCH_ANIMAL_FIELD_LABELS.get(normalized_field)
+        if field_label is None:
+            return _redirect(
+                request,
+                f"/cages/{cage_id}#mice",
+                "Choose sex, genotype, date of birth, or mouse user.",
+                kind="error",
+            )
+
+        cleaned_value = _clean(value or "")
+        try:
+            updated_count = _db(request).batch_update_animals(
+                cage_id,
+                field=normalized_field,
+                value=cleaned_value,
+            )
+        except ValueError as exc:
+            return _redirect(
+                request,
+                f"/cages/{cage_id}#mice",
+                str(exc),
+                kind="error",
+            )
+
+        mouse_label = "mouse" if updated_count == 1 else "mice"
+        action = "Cleared" if cleaned_value is None else "Updated"
         return _redirect(
             request,
             f"/cages/{cage_id}#mice",
-            "Choose sex, genotype, date of birth, or mouse user.",
-            kind="error",
+            f"{action} {field_label} for {updated_count} {mouse_label}.",
         )
 
-    cleaned_value = _clean(value)
+    submitted_properties = {
+        "sex": _clean(sex or ""),
+        "genotype": _clean(genotype or ""),
+        "dob": _clean(dob or ""),
+        "mouse_user": _clean(mouse_user or ""),
+    }
+    if batch_mode == "selected":
+        selected = {
+            name: submitted_properties[name]
+            for name, should_change in (
+                ("sex", change_sex),
+                ("genotype", change_genotype),
+                ("dob", change_dob),
+                ("mouse_user", change_mouse_user),
+            )
+            if should_change
+        }
+    else:
+        provided = {
+            "sex": sex,
+            "genotype": genotype,
+            "dob": dob,
+            "mouse_user": mouse_user,
+        }
+        selected = {
+            name: submitted_properties[name]
+            for name, raw_value in provided.items()
+            if raw_value is not None
+        }
     try:
-        updated_count = _db(request).batch_update_animals(
-            cage_id,
-            field=normalized_field,
-            value=cleaned_value,
-        )
+        updated_count = _db(request).batch_update_animal_properties(cage_id, selected)
     except ValueError as exc:
         return _redirect(
             request,
@@ -567,11 +733,11 @@ def batch_update_cage_animals(
         )
 
     mouse_label = "mouse" if updated_count == 1 else "mice"
-    action = "Cleared" if cleaned_value is None else "Updated"
+    property_label = "property" if len(selected) == 1 else "properties"
     return _redirect(
         request,
         f"/cages/{cage_id}#mice",
-        f"{action} {field_label} for {updated_count} {mouse_label}.",
+        f"Updated {len(selected)} {property_label} for {updated_count} {mouse_label}.",
     )
 
 
@@ -721,3 +887,17 @@ def update_surgery(
         f"/cages/{cage_id}",
         "Surgery details updated.",
     )
+
+
+@router.post("/surgeries/{surgery_id}/remove")
+def remove_surgery(surgery_id: int, request: Request) -> RedirectResponse:
+    database = _db(request)
+    surgery = database.get_surgery(surgery_id)
+    if surgery is None:
+        raise HTTPException(status_code=404, detail="Surgery record not found.")
+    cage_id = int(surgery["cage_id"])
+    try:
+        database.remove_surgery(surgery_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _redirect(request, f"/cages/{cage_id}", "Surgery record removed.")

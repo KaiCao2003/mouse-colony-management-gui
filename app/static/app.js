@@ -4,6 +4,7 @@
   const csrfMeta = document.querySelector('meta[name="csrf-token"]');
   const clientNotice = document.querySelector("[data-client-notice]");
   const splitForm = document.querySelector("#split-form");
+  const batchEditForm = document.querySelector("[data-batch-edit-form]");
   const animalSelectors = [...document.querySelectorAll(".animal-selector")];
   const selectionCount = document.querySelector("[data-selection-count]");
   const workspacePanels = [...document.querySelectorAll("[data-workspace-panel]")];
@@ -213,12 +214,34 @@
     }
   });
 
+  if (batchEditForm instanceof HTMLFormElement) {
+    for (const property of batchEditForm.querySelectorAll("[data-batch-property]")) {
+      const toggle = property.querySelector('input[type="checkbox"]');
+      const valueControl = property.querySelector("select, input:not([type=\"checkbox\"])");
+      if (!(toggle instanceof HTMLInputElement) || !valueControl) continue;
+      valueControl.addEventListener("input", () => {
+        toggle.checked = true;
+      });
+      valueControl.addEventListener("change", () => {
+        toggle.checked = true;
+      });
+    }
+  }
+
   document.addEventListener("submit", async (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement) || form.method.toLowerCase() !== "post") return;
 
     event.preventDefault();
     if (form.dataset.submitting === "true") return;
+
+    if (
+      form.matches("[data-batch-edit-form]") &&
+      !form.querySelector('input[type="checkbox"]:checked')
+    ) {
+      showError("Choose at least one mouse property to update.");
+      return;
+    }
 
     const submitter = event.submitter;
     const confirmation = submitter?.dataset.confirm || form.dataset.confirm;

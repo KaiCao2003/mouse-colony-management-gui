@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 from html import unescape
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.database import Database
 from app.main import create_app
+from app.security import LOGIN_COOKIE_NAME
 
 BASE_URL = "http://127.0.0.1:8765"
 TEST_ROOM_ALIASES = {
@@ -20,7 +22,12 @@ TEST_ROOM_ALIASES = {
 TEST_BREEDING_ROOMS = {"ROOM-BREEDING", "Breeding Core"}
 
 
-def _client(tmp_path: Path, *, root_path: str = "") -> TestClient:
+def _client(
+    tmp_path: Path,
+    *,
+    root_path: str = "",
+    authenticated: bool = True,
+) -> TestClient:
     database = Database(
         tmp_path / "route-test.db",
         room_aliases=TEST_ROOM_ALIASES,
@@ -35,7 +42,13 @@ def _client(tmp_path: Path, *, root_path: str = "") -> TestClient:
         database=database,
         run_seed=False,
     )
-    return TestClient(app, base_url=BASE_URL, client=("127.0.0.1", 50_000))
+    client = TestClient(app, base_url=BASE_URL, client=("127.0.0.1", 50_000))
+    if authenticated:
+        client.cookies.set(
+            LOGIN_COOKIE_NAME,
+            app.state.login_manager.issue_session_token(),
+        )
+    return client
 
 
 def _csrf(client: TestClient) -> dict[str, str]:
@@ -119,12 +132,126 @@ def test_posts_require_same_origin_and_csrf(tmp_path: Path) -> None:
     assert response.json()["code"] == "invalid_csrf"
 
 
-def test_root_and_health_are_available_without_login(tmp_path: Path) -> None:
+def test_login_page_protects_every_application_route(tmp_path: Path) -> None:
+    with _client(tmp_path, authenticated=False) as client:
+        root = client.get("/", follow_redirects=False)
+        health = client.get("/healthz", follow_redirects=False)
+        cage = client.get("/cages/999", follow_redirects=False)
+        login = client.get("/login")
+        stylesheet = client.get("/static/styles.css")
+        script = client.get("/static/app.js")
+
+    assert root.status_code == health.status_code == cage.status_code == 303
+    assert root.headers["location"] == "/login?next=%2F"
+    assert health.headers["location"] == "/login?next=%2Fhealthz"
+    assert cage.headers["location"] == "/login?next=%2Fcages%2F999"
+    assert login.status_code == 200
+    assert "What's the PI's first name?" in login.text
+    assert 'type="password" name="answer"' in login.text
+    assert "test-only-login-answer" not in login.text.casefold()
+    assert "app.js" not in login.text
+    assert stylesheet.status_code == script.status_code == 200
+    assert "test-only-login-answer" not in f"{stylesheet.text}{script.text}".casefold()
+
+
+def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path, authenticated=False) as client:
+        missing_origin = client.post(
+            "/login",
+            data={"answer": "TEST-ONLY-LOGIN-ANSWER"},
+            follow_redirects=False,
+        )
+        wrong_port = client.post(
+            "/login",
+            headers={"Origin": "http://127.0.0.1:9999"},
+            data={"answer": "TEST-ONLY-LOGIN-ANSWER"},
+            follow_redirects=False,
+        )
+        incorrect = client.post(
+            "/login",
+            headers={"Origin": BASE_URL},
+            data={"answer": "not the answer"},
+            follow_redirects=False,
+        )
+        accepted = client.post(
+            "/login",
+            headers={"Origin": BASE_URL},
+            data={"answer": "  Test-Only-Login-Answer  ", "next": "/?view=stock"},
+            follow_redirects=False,
+        )
+        root = client.get("/")
+        health = client.get("/healthz")
+        issued_session = client.cookies.get(LOGIN_COOKIE_NAME)
+        assert issued_session is not None
+        token = re.search(r'<meta name="csrf-token" content="([^"]+)">', root.text)
+        assert token is not None
+        logout = client.post(
+            "/logout",
+            headers={"Origin": BASE_URL, "X-CSRF-Token": token.group(1)},
+            follow_redirects=False,
+        )
+        locked_again = client.get("/", follow_redirects=False)
+        client.cookies.set(LOGIN_COOKIE_NAME, issued_session)
+        replayed_session = client.get("/", follow_redirects=False)
+
+    assert missing_origin.status_code == 403
+    assert missing_origin.json()["code"] == "invalid_origin"
+    assert wrong_port.status_code == 403
+    assert wrong_port.json()["code"] == "invalid_origin"
+    assert incorrect.status_code == 401
+    assert "That answer is not correct." in incorrect.text
+    assert LOGIN_COOKIE_NAME not in incorrect.headers.get("set-cookie", "")
+    assert accepted.status_code == 303
+    assert accepted.headers["location"] == "/?view=stock"
+    cookie = accepted.headers["set-cookie"].casefold()
+    assert f"{LOGIN_COOKIE_NAME}=" in cookie
+    assert "httponly" in cookie
+    assert "samesite=strict" in cookie
+    assert "max-age=43200" in cookie
+    assert root.status_code == 200
+    assert health.status_code == 200 and health.json()["status"] == "ok"
+    assert logout.status_code == 303
+    assert logout.headers["location"] == "/login"
+    assert locked_again.status_code == 303
+    assert replayed_session.status_code == 303
+
+
+def test_login_rejects_external_return_url_and_prefixes_reverse_proxy_paths(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path, root_path="/colony/", authenticated=False) as client:
+        gated = client.get("/", follow_redirects=False)
+        rejected_logins = [
+            client.get("/login", params={"next": target})
+            for target in (
+                "https://example.com/",
+                "//example.com/",
+                "/colony/%5C%5Cexample.com/",
+            )
+        ]
+        accepted = client.post(
+            "/login",
+            headers={"Origin": BASE_URL},
+            data={"answer": "test-only-login-answer", "next": "https://example.com/"},
+            follow_redirects=False,
+        )
+
+    assert gated.headers["location"] == "/colony/login?next=%2Fcolony%2F"
+    assert all('action="/colony/login"' in login.text for login in rejected_logins)
+    assert all('name="next" value="/colony/"' in login.text for login in rejected_logins)
+    assert accepted.status_code == 303
+    assert accepted.headers["location"] == "/colony/"
+    assert "path=/colony" in accepted.headers["set-cookie"].casefold()
+
+
+def test_root_and_health_are_available_after_login(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         root = client.get("/")
         health = client.get("/healthz")
     assert root.status_code == 200
-    assert "Local data · No login required" not in root.text
+    assert 'action="/logout"' in root.text
     assert health.json()["status"] == "ok"
 
 
@@ -303,6 +430,50 @@ def test_root_hash_navigation_targets_and_filter_links(tmp_path: Path) -> None:
     assert 'href="/?status=active&amp;view=stock#cages"' in html
 
 
+def test_default_cage_list_hides_inactive_and_shows_last_changed_date(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        active_id = database.create_cage(cage_card_id="DEFAULT-ACTIVE")
+        inactive_id = database.create_cage(
+            cage_card_id="DEFAULT-INACTIVE",
+            status="inactive",
+        )
+        on_order_id = database.create_cage(
+            cage_card_id="DEFAULT-ON-ORDER",
+            status="on_order",
+        )
+        database.connection.execute(
+            "UPDATE cages SET updated_at = '2024-05-06 12:34:56' WHERE id = ?",
+            (active_id,),
+        )
+
+        default_page = client.get("/")
+        all_page = client.get("/", params={"status": "all"})
+
+    assert default_page.status_code == all_page.status_code == 200
+    assert re.search(rf'href="/cages/{active_id}(?:\?[^"]*)?"', default_page.text)
+    assert not re.search(rf'href="/cages/{inactive_id}(?:\?[^"]*)?"', default_page.text)
+    assert not re.search(rf'href="/cages/{on_order_id}(?:\?[^"]*)?"', default_page.text)
+    assert '<option value="active" selected>Active</option>' in default_page.text
+    active_row = _cage_row(default_page.text, active_id)
+    assert '<th scope="col">Last changed</th>' in default_page.text
+    assert (
+        '<td class="last-changed-cell" data-label="Last changed">'
+        '<time datetime="2024-05-06">2024-05-06</time></td>'
+    ) in active_row
+
+    assert '<option value="all" selected>All statuses</option>' in all_page.text
+    for cage_id in (active_id, inactive_id, on_order_id):
+        assert re.search(rf'href="/cages/{cage_id}(?:\?[^"]*)?"', all_page.text)
+    all_row = _cage_row(all_page.text, inactive_id)
+    record_link = re.search(r'class="record-link" href="([^"]+)"', all_row)
+    assert record_link is not None
+    all_return_to = parse_qs(urlsplit(unescape(record_link.group(1))).query)["return_to"]
+    assert all_return_to == ["/?view=all&status=all#cages"]
+
+
 def test_cage_rows_expose_full_row_navigation_target(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         cage_id = client.app.state.database.create_cage(cage_card_id="ROW-LINK")
@@ -374,17 +545,13 @@ def test_cage_detail_returns_to_source_list_through_repeated_edits(tmp_path: Pat
         refreshed = client.get(second_update.headers["location"])
 
     assert return_to == (
-        "/?view=stock&search=RETURN&status=active&mouse_user=Alice&room=ROOM-REGULAR"
+        "/?view=stock&search=RETURN&mouse_user=Alice&room=ROOM-REGULAR"
         "&sort=cage_card_id&direction=desc#cages"
     )
     assert unescape(back_link.group(1)) == return_to
     assert first_update.status_code == second_update.status_code == 303
-    assert parse_qs(urlsplit(first_update.headers["location"]).query)["return_to"] == [
-        return_to
-    ]
-    assert parse_qs(urlsplit(second_update.headers["location"]).query)["return_to"] == [
-        return_to
-    ]
+    assert parse_qs(urlsplit(first_update.headers["location"]).query)["return_to"] == [return_to]
+    assert parse_qs(urlsplit(second_update.headers["location"]).query)["return_to"] == [return_to]
     refreshed_back = re.search(r'class="back-link" href="([^"]+)"', refreshed.text)
     assert refreshed_back is not None
     assert unescape(refreshed_back.group(1)) == return_to
@@ -517,7 +684,6 @@ def test_view_switcher_preserves_current_filters(tmp_path: Path) -> None:
         assert query == {
             "view": [view_name],
             "search": ["Alpha & Beta"],
-            "status": ["active"],
             "tag": ["Group & One"],
         }
 
@@ -577,7 +743,6 @@ def test_index_filters_sorts_and_preserves_extended_query(tmp_path: Path) -> Non
         assert match is not None
         assert parse_qs(urlsplit(unescape(match.group(1))).query) == {
             "view": [view_name],
-            "status": ["active"],
             "mouse_user": ["Alice"],
             "room": ["ROOM-REGULAR"],
             "sort": ["cage_card_id"],
@@ -599,7 +764,7 @@ def test_sortable_headers_cycle_ascending_descending_then_default(tmp_path: Path
         database.create_cage(cage_card_id="D-NO-ROOM", status="active", room=None)
         database.create_cage(cage_card_id="E-ROOM-B", status="active", room="Room B")
 
-        default_page = client.get("/?view=all")
+        default_page = client.get("/?view=all&status=all")
         assert default_page.status_code == 200
         assert '<select name="sort">' not in default_page.text
         assert '<select name="direction">' not in default_page.text
@@ -610,6 +775,7 @@ def test_sortable_headers_cycle_ascending_descending_then_default(tmp_path: Path
             assert "aria-sort=" not in default_header
             assert parse_qs(urlsplit(ascending_url).query) == {
                 "view": ["all"],
+                "status": ["all"],
                 "sort": [field],
                 "direction": ["asc"],
             }
@@ -620,6 +786,7 @@ def test_sortable_headers_cycle_ascending_descending_then_default(tmp_path: Path
             assert "sort-link is-active" in ascending_header
             assert parse_qs(urlsplit(descending_url).query) == {
                 "view": ["all"],
+                "status": ["all"],
                 "sort": [field],
                 "direction": ["desc"],
             }
@@ -627,7 +794,10 @@ def test_sortable_headers_cycle_ascending_descending_then_default(tmp_path: Path
             descending_page = client.get(descending_url)
             descending_header, default_url = _sort_header(descending_page.text, field)
             assert 'aria-sort="descending"' in descending_header
-            assert parse_qs(urlsplit(default_url).query) == {"view": ["all"]}
+            assert parse_qs(urlsplit(default_url).query) == {
+                "view": ["all"],
+                "status": ["all"],
+            }
 
             restored_page = client.get(default_url)
             restored_header, restored_ascending_url = _sort_header(restored_page.text, field)
@@ -635,12 +805,13 @@ def test_sortable_headers_cycle_ascending_descending_then_default(tmp_path: Path
             assert "sort-link is-active" not in restored_header
             assert parse_qs(urlsplit(restored_ascending_url).query) == {
                 "view": ["all"],
+                "status": ["all"],
                 "sort": [field],
                 "direction": ["asc"],
             }
 
-        cage_ascending = client.get("/?view=all&sort=cage_card_id&direction=asc")
-        cage_descending = client.get("/?view=all&sort=cage_card_id&direction=desc")
+        cage_ascending = client.get("/?view=all&status=all&sort=cage_card_id&direction=asc")
+        cage_descending = client.get("/?view=all&status=all&sort=cage_card_id&direction=desc")
         identifiers = ["A-FIRST", "B-SECOND", "C-THIRD", "D-NO-ROOM", "E-ROOM-B"]
         assert [cage_ascending.text.index(value) for value in identifiers] == sorted(
             cage_ascending.text.index(value) for value in identifiers
@@ -680,7 +851,6 @@ def test_sort_headers_preserve_filters_and_explicit_sort_in_forms(tmp_path: Path
     assert parse_qs(urlsplit(default_url).query) == {
         "view": ["stock"],
         "search": ["Alpha & Beta"],
-        "status": ["active"],
         "tag": ["Group & One"],
         "mouse_user": ["Alice"],
         "room": ["Room A"],
@@ -722,9 +892,7 @@ def test_mouse_user_flows_through_create_add_update_batch_and_wean(tmp_path: Pat
             follow_redirects=False,
         )
         after_add = database.list_animals(cage_id)
-        added_animal = next(
-            animal for animal in after_add if animal["id"] != created_animal["id"]
-        )
+        added_animal = next(animal for animal in after_add if animal["id"] != created_animal["id"])
 
         updated_response = client.post(
             f"/animals/{created_animal['id']}/update",
@@ -897,15 +1065,15 @@ def test_direct_add_mice_is_limited_to_breeding_pair_cages(tmp_path: Path) -> No
         regular_animals = database.list_animals(regular_id)
         breeding_animals = database.list_animals(breeding_id)
 
-    regular_action = f'/cages/{regular_id}/add-mice'
-    breeding_action = f'/cages/{breeding_id}/add-mice'
+    regular_action = f"/cages/{regular_id}/add-mice"
+    breeding_action = f"/cages/{breeding_id}/add-mice"
     assert regular_detail.status_code == 200
     assert regular_action not in regular_detail.text
-    assert f'/cages/{regular_id}/split' in regular_detail.text
+    assert f"/cages/{regular_id}/split" not in regular_detail.text
     assert breeding_detail.status_code == 200
     assert breeding_action in breeding_detail.text
     assert inactive_breeding_detail.status_code == 200
-    assert f'/cages/{inactive_breeding_id}/add-mice' not in inactive_breeding_detail.text
+    assert f"/cages/{inactive_breeding_id}/add-mice" not in inactive_breeding_detail.text
 
     assert rejected.status_code == 303
     rejected_location = urlsplit(rejected.headers["location"])
@@ -920,6 +1088,75 @@ def test_direct_add_mice_is_limited_to_breeding_pair_cages(tmp_path: Path) -> No
     assert len(breeding_animals) == 2
 
 
+def test_split_and_surgery_controls_follow_active_mouse_count(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        single_id = database.create_cage(cage_card_id="SINGLE-CONTROLS", animal_count=1)
+        multi_id = database.create_cage(cage_card_id="MULTI-CONTROLS", animal_count=2)
+        single_animal = database.list_animals(single_id)[0]
+        multi_animal = database.list_animals(multi_id)[0]
+        database.add_surgery(
+            multi_animal["id"],
+            surgery_date="2026-07-01",
+            surgery_time=None,
+            operator="Operator",
+            surgery_type="Headplate",
+        )
+
+        single = client.get(f"/cages/{single_id}")
+        multi = client.get(f"/cages/{multi_id}")
+
+    assert f"/cages/{single_id}/split" not in single.text
+    assert f"/animals/{single_animal['id']}/surgery" in single.text
+    assert "animal-selector" not in single.text
+    assert f"/cages/{multi_id}/split" in multi.text
+    assert "animal-selector" in multi.text
+    assert "surgery-block" not in multi.text
+    assert f"/animals/{multi_animal['id']}/surgery" not in multi.text
+
+
+def test_room_changes_use_selects_and_new_records_get_date_defaults(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(
+            cage_card_id="ROOM-AND-DATES",
+            animal_count=1,
+            room="ROOM-REGULAR",
+            is_breeding_pair=True,
+        )
+        root = client.get("/")
+        detail = client.get(f"/cages/{cage_id}")
+
+        wean_response = client.post(
+            f"/cages/{cage_id}/wean",
+            headers=_csrf(client),
+            data={
+                "count": "1",
+                "sex": "U",
+                "destination_cage_card_id": "AUTO-WEAN-DOB",
+                "destination_room": "ROOM-REVERSE",
+            },
+            follow_redirects=False,
+        )
+        wean_id = int(urlsplit(wean_response.headers["location"]).path.rsplit("/", 1)[1])
+        weaned = database.list_animals(wean_id)
+        wean_cage = database.get_cage(wean_id)
+
+    today = date.today().isoformat()
+    wean_dob = (date.today() - timedelta(days=21)).isoformat()
+    assert '<select name="room">' in root.text
+    assert '<input type="text" name="room"' not in root.text
+    assert '<select name="room">' in detail.text
+    assert detail.text.count('<select name="destination_room">') == 1
+    assert 'value="ROOM-REGULAR" selected' in detail.text
+    assert 'value="ROOM-REVERSE"' in detail.text
+    assert f'name="surgery_date" value="{today}"' in detail.text
+    assert f'name="dob" value="{wean_dob}" required' in detail.text
+    assert wean_response.status_code == 303
+    assert {animal["dob"] for animal in weaned} == {wean_dob}
+    assert wean_cage is not None and wean_cage["room"] == "ROOM-REVERSE"
+
+
 def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(
     tmp_path: Path,
 ) -> None:
@@ -929,7 +1166,9 @@ def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(
             cage_card_id="BATCH-ROUTE",
             animal_count=3,
             sex="M",
+            dob="2026-01-02",
             genotype="Original",
+            mouse_user="Original owner",
         )
         inactive_id = int(database.list_animals(cage_id)[0]["id"])
         database.toggle_animal(inactive_id)
@@ -938,7 +1177,17 @@ def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(
         response = client.post(
             f"/cages/{cage_id}/animals/batch-update",
             headers=headers,
-            data={"field": "genotype", "value": "  WT  "},
+            data={
+                "batch_mode": "selected",
+                "change_sex": "true",
+                "change_genotype": "true",
+                "change_dob": "true",
+                "change_mouse_user": "true",
+                "sex": "F",
+                "genotype": "  WT  ",
+                "dob": "2026-02-03",
+                "mouse_user": "Batch owner",
+            },
             follow_redirects=False,
         )
         updated = database.list_animals(cage_id, include_inactive=True)
@@ -953,10 +1202,11 @@ def test_batch_update_cage_animals_changes_all_records_and_returns_to_mice(
     response_location = urlsplit(response.headers["location"])
     assert response_location.path == f"/cages/{cage_id}"
     assert response_location.fragment == "mice"
-    assert parse_qs(response_location.query)["message"] == [
-        "Updated genotype for 3 mice."
-    ]
+    assert parse_qs(response_location.query)["message"] == ["Updated 4 properties for 3 mice."]
     assert {animal["genotype"] for animal in updated} == {"WT"}
+    assert {animal["sex"] for animal in updated} == {"F"}
+    assert {animal["dob"] for animal in updated} == {"2026-02-03"}
+    assert {animal["mouse_user"] for animal in updated} == {"Batch owner"}
     assert {animal["status"] for animal in updated} == {"active", "inactive"}
 
     assert invalid.status_code == 303
@@ -1022,6 +1272,40 @@ def test_update_surgery_route_persists_fields_and_keeps_record_count(tmp_path: P
     assert missing.json()["detail"] == "Surgery record not found."
 
 
+def test_remove_surgery_route_deletes_record_and_returns_to_mouse(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(cage_card_id="REMOVE-SURGERY", animal_count=1)
+        animal_id = int(database.list_animals(cage_id)[0]["id"])
+        surgery_id = database.add_surgery(
+            animal_id,
+            surgery_date="2026-07-01",
+            surgery_time=None,
+            operator="Operator",
+            surgery_type="Headplate",
+        )
+        assert surgery_id is not None
+
+        response = client.post(
+            f"/surgeries/{surgery_id}/remove",
+            headers=_csrf(client),
+            follow_redirects=False,
+        )
+        removed = database.get_surgery(surgery_id)
+        missing = client.post(
+            "/surgeries/999999/remove",
+            headers=_csrf(client),
+        )
+
+    assert response.status_code == 303
+    location = urlsplit(response.headers["location"])
+    assert location.path == f"/cages/{cage_id}"
+    assert parse_qs(location.query)["message"] == ["Surgery record removed."]
+    assert removed is None
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Surgery record not found."
+
+
 def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         database = client.app.state.database
@@ -1061,7 +1345,10 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         html,
     )
     assert post_actions
-    assert all("return_to=%2F%23cages" in action for action in post_actions)
+    cage_actions = [action for action in post_actions if action != "/logout"]
+    assert cage_actions
+    assert all("return_to=%2F%23cages" in action for action in cage_actions)
+    assert "/logout" in post_actions
 
     for action in (
         f"/cages/{cage_id}/toggle",
@@ -1073,17 +1360,17 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
 
     for action in (
         f"/cages/{cage_id}/add-mice",
-        f"/cages/{cage_id}/split",
         f"/cages/{cage_id}/wean",
     ):
         assert 'data-return-hash="#cage-actions"' in _form_tag(html, action)
+    assert f"/cages/{cage_id}/split" not in html
 
     batch_action = f"/cages/{cage_id}/animals/batch-update"
     batch_forms = re.findall(
         rf'<form\b[^>]*action="{re.escape(batch_action)}(?:\?[^\"]*)?"[^>]*>',
         html,
     )
-    assert len(batch_forms) == 4
+    assert len(batch_forms) == 1
     assert all('data-return-hash="#mice"' in form for form in batch_forms)
     batch_form_bodies = re.findall(
         r'<form\b[^>]*action="[^"]*/animals/batch-update(?:\?[^\"]*)?"[^>]*>'
@@ -1091,22 +1378,19 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         html,
         re.DOTALL,
     )
-    mouse_user_batch = next(
-        form for form in batch_form_bodies if 'value="mouse_user"' in form
-    )
-    mouse_user_value = re.search(
-        r'<input[^>]*name="value"[^>]*>',
-        mouse_user_batch,
-    )
-    assert mouse_user_value is not None
-    assert "required" not in mouse_user_value.group(0)
-    assert 'placeholder="Leave blank to clear"' in mouse_user_value.group(0)
+    assert len(batch_form_bodies) == 1
+    batch_form = batch_form_bodies[0]
+    for property_name in ("sex", "genotype", "dob", "mouse_user"):
+        assert f'name="change_{property_name}"' in batch_form
+        assert f'name="{property_name}"' in batch_form
+    assert batch_form.count("Save changes") == 1
 
     for action in (
         f"/animals/{animal['id']}/surgery",
         f"/animals/{animal['id']}/update",
         f"/animals/{animal['id']}/toggle",
         f"/surgeries/{surgery_id}/update",
+        f"/surgeries/{surgery_id}/remove",
     ):
         assert f'data-return-hash="{mouse_hash}"' in _form_tag(html, action)
 

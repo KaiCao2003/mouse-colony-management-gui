@@ -143,6 +143,13 @@ h3 {
   gap: 24px;
 }
 
+.site-header__actions {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -185,6 +192,89 @@ h3 {
   left: 4px;
   height: 2px;
   background: var(--purple-700);
+}
+
+.session-form {
+  display: flex;
+  align-items: center;
+}
+
+.session-link {
+  min-height: 32px;
+  padding: 5px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.session-link:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.login-page {
+  display: grid;
+  min-height: 100vh;
+  min-height: 100svh;
+  background: var(--surface-soft);
+}
+
+.login-shell {
+  width: min(420px, calc(100% - 32px));
+  margin: auto;
+  padding-block: 32px;
+}
+
+.login-card {
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.login-heading {
+  margin-bottom: 24px;
+}
+
+.login-brand {
+  margin-bottom: 7px;
+  color: var(--purple-700);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.login-heading h1 {
+  font-size: 1.75rem;
+}
+
+.login-form {
+  display: grid;
+  gap: 18px;
+}
+
+.login-question {
+  gap: 7px;
+}
+
+.login-question > span {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.login-form .button {
+  width: 100%;
+}
+
+.login-error {
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 14px;
 }
 
 .page-stack {
@@ -694,6 +784,11 @@ a.tag:hover {
   background: var(--purple-50);
 }
 
+.last-changed-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .data-table td > span:not(.status, .tag, .cage-kind),
 .data-table td > a + span {
   display: block;
@@ -1091,37 +1186,53 @@ a.tag:hover {
   content: "−";
 }
 
-.batch-edit__forms {
+.batch-edit__form {
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 0;
   padding: 10px 14px 12px;
   border-top: 1px solid var(--border);
   background: var(--surface-soft);
 }
 
-.batch-edit__form {
+.batch-edit__form > .button {
+  margin-left: 12px;
+  white-space: nowrap;
+}
+
+.batch-edit__property {
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 8px;
   padding: 0 12px;
-}
-
-.batch-edit__form:first-child {
-  padding-left: 0;
-}
-
-.batch-edit__form:last-child {
-  padding-right: 0;
-}
-
-.batch-edit__form + .batch-edit__form {
   border-left: 1px solid var(--border);
 }
 
-.batch-edit__form > .button {
-  white-space: nowrap;
+.batch-edit__property:first-of-type {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.batch-edit__toggle {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--purple-700);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.batch-edit__toggle input {
+  width: 14px;
+  min-height: 14px;
+  accent-color: var(--purple-700);
+}
+
+.disclosure-note {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .animal-list {
@@ -1151,6 +1262,10 @@ a.tag:hover {
   align-items: center;
   gap: 9px;
   padding: 7px 14px;
+}
+
+.animal-card__header--no-select {
+  grid-template-columns: 1fr auto auto;
 }
 
 .select-animal {
@@ -1286,6 +1401,16 @@ a.tag:hover {
   font-size: 13px;
 }
 
+.surgery-row__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.surgery-remove-form {
+  display: none;
+}
+
 .surgery-field-label {
   position: absolute;
   width: 1px;
@@ -1406,6 +1531,21 @@ a.tag:hover {
   .tag-rail {
     border-top: 1px solid var(--border);
     border-left: 0;
+  }
+
+  .batch-edit__form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 0;
+  }
+
+  .batch-edit__property:nth-of-type(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .batch-edit__save {
+    grid-column: 1 / -1;
+    justify-self: end;
   }
 
   .surgery-form {
@@ -1555,7 +1695,7 @@ a.tag:hover {
     white-space: normal;
   }
 
-  .surgery-row .button {
+  .surgery-row__actions {
     grid-column: 1 / -1;
     justify-self: end;
   }
@@ -1582,7 +1722,8 @@ a.tag:hover {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       "cage status"
-      "mice users"
+      "mice changed"
+      "users users"
       "room sex"
       "genotype tags";
     gap: 10px 14px;
@@ -1616,7 +1757,8 @@ a.tag:hover {
   .cage-table td:nth-child(5) { grid-area: sex; }
   .cage-table td:nth-child(6) { grid-area: genotype; }
   .cage-table td:nth-child(7) { grid-area: tags; }
-  .cage-table td:nth-child(8) {
+  .cage-table td:nth-child(8) { grid-area: changed; }
+  .cage-table td:nth-child(9) {
     grid-area: status;
     justify-self: end;
     text-align: right;
@@ -1628,6 +1770,10 @@ a.tag:hover {
     gap: 10px;
   }
 
+  .site-header__actions {
+    gap: 9px;
+  }
+
   .primary-nav {
     gap: 12px;
   }
@@ -1635,6 +1781,14 @@ a.tag:hover {
   .primary-nav__link {
     padding-inline: 2px;
     font-size: 13px;
+  }
+
+  .session-link {
+    font-size: 12px;
+  }
+
+  .login-card {
+    padding: 22px;
   }
 
   .summary-grid {
@@ -1675,6 +1829,21 @@ a.tag:hover {
     width: 100%;
   }
 
+  .batch-edit__form {
+    grid-template-columns: 1fr;
+  }
+
+  .batch-edit__property,
+  .batch-edit__property:nth-of-type(odd) {
+    padding-inline: 0;
+    border-left: 0;
+  }
+
+  .batch-edit__save {
+    width: 100%;
+    margin-left: 0;
+  }
+
   .filter-form__actions {
     justify-content: stretch;
   }
@@ -1702,15 +1871,27 @@ a.tag:hover {
     grid-template-columns: auto 1fr auto;
   }
 
+  .animal-card__header--no-select {
+    grid-template-columns: 1fr auto;
+  }
+
   .animal-card__header .status {
     grid-column: 2;
     grid-row: 2;
     justify-self: start;
   }
 
+  .animal-card__header--no-select .status {
+    grid-column: 1;
+  }
+
   .animal-card__header .animal-status-form {
     grid-column: 3;
     grid-row: 1 / span 2;
+  }
+
+  .animal-card__header--no-select .animal-status-form {
+    grid-column: 2;
   }
 
   .surgery-row {
@@ -1731,7 +1912,7 @@ a.tag:hover {
   .cage-page .mouse-detail-grid > .button,
   .cage-page .cage-save,
   .cage-page .surgery-form .button,
-  .cage-page .surgery-row .button {
+  .cage-page .surgery-row__actions {
     grid-column: 1 / -1;
   }
 
@@ -1744,7 +1925,7 @@ a.tag:hover {
     width: 100%;
   }
 
-  .surgery-row .button,
+  .surgery-row__actions,
   .animal-status-form .button {
     width: 100%;
   }
