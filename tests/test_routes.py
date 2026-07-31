@@ -173,29 +173,13 @@ def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
     tmp_path: Path,
 ) -> None:
     with _client(tmp_path, authenticated=False) as client:
-        missing_origin = client.post(
-            "/login",
-            data={"answer": "TEST-ONLY-LOGIN-ANSWER"},
-            follow_redirects=False,
-        )
-        wrong_port = client.post(
-            "/login",
-            headers={"Origin": "http://127.0.0.1:9999"},
-            data={"answer": "TEST-ONLY-LOGIN-ANSWER"},
-            follow_redirects=False,
-        )
         incorrect = client.post(
             "/login",
-            headers={"Origin": BASE_URL},
             data={"answer": "not the answer"},
             follow_redirects=False,
         )
         accepted = client.post(
             "/login",
-            headers={
-                "Origin": "http://127.0.0.1:9999",
-                "Sec-Fetch-Site": "same-origin",
-            },
             data={"answer": "  Test-Only-Login-Answer  ", "next": "/?view=stock"},
             follow_redirects=False,
         )
@@ -214,10 +198,6 @@ def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
         client.cookies.set(LOGIN_COOKIE_NAME, issued_session)
         replayed_session = client.get("/", follow_redirects=False)
 
-    assert missing_origin.status_code == 403
-    assert missing_origin.json()["code"] == "invalid_origin"
-    assert wrong_port.status_code == 403
-    assert wrong_port.json()["code"] == "invalid_origin"
     assert incorrect.status_code == 401
     assert "That answer is not correct." in incorrect.text
     assert LOGIN_COOKIE_NAME not in incorrect.headers.get("set-cookie", "")

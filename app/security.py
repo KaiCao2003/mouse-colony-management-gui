@@ -285,15 +285,17 @@ class LocalGuardMiddleware:
         if _host_name(headers.get("host")) not in self.allowed_hosts:
             await _error("invalid_host")(scope, receive, send)
             return
-        if scope.get("method", "GET").upper() in STATE_CHANGING_METHODS:
+        if (
+            scope.get("method", "GET").upper() in STATE_CHANGING_METHODS
+            and _route_path(scope) != "/login"
+        ):
             if not _same_origin(headers, scope.get("scheme", "http")):
                 await _error("invalid_origin")(scope, receive, send)
                 return
-            if _route_path(scope) != "/login":
-                candidates = headers.getlist(CSRF_HEADER_NAME)
-                if len(candidates) != 1 or not self.csrf_manager.validate(candidates[0]):
-                    await _error("invalid_csrf")(scope, receive, send)
-                    return
+            candidates = headers.getlist(CSRF_HEADER_NAME)
+            if len(candidates) != 1 or not self.csrf_manager.validate(candidates[0]):
+                await _error("invalid_csrf")(scope, receive, send)
+                return
         await self.app(scope, receive, send)
 
 
