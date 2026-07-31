@@ -106,6 +106,14 @@ WHEN (SELECT COUNT(*) FROM surgeries WHERE animal_id = NEW.animal_id) >= 4
 BEGIN
     SELECT RAISE(ABORT, 'A mouse can have at most 4 surgery records.');
 END;
+
+CREATE TABLE IF NOT EXISTS login_sessions (
+    token_digest BLOB PRIMARY KEY CHECK(length(token_digest) = 32),
+    expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS login_sessions_expires_at_idx
+ON login_sessions(expires_at);
 """
 
 
@@ -232,6 +240,63 @@ class Database:
                 raise
             else:
                 connection.commit()
+
+    def create_login_session(
+        self,
+        token_digest: bytes,
+        expires_at: int,
+        *,
+        now: int,
+    ) -> None:
+        """Persist a hashed login token and clear sessions that have expired."""
+
+        if len(token_digest) != 32:
+            raise ValueError("Login session digests must contain 32 bytes.")
+        with self._lock:
+            self.connection.execute(
+                "DELETE FROM login_sessions WHERE expires_at <= ?",
+                (now,),
+            )
+            self.connection.execute(
+                """
+                INSERT OR REPLACE INTO login_sessions(token_digest, expires_at)
+                VALUES (?, ?)
+                """,
+                (token_digest, expires_at),
+            )
+
+    def validate_login_session(self, token_digest: bytes, *, now: int) -> bool:
+        """Return whether a hashed token exists and has not expired."""
+
+        if len(token_digest) != 32:
+            return False
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT 1
+                FROM login_sessions
+                WHERE token_digest = ? AND expires_at > ?
+                """,
+                (token_digest, now),
+            ).fetchone()
+            if row is not None:
+                return True
+            self.connection.execute(
+                "DELETE FROM login_sessions WHERE token_digest = ? AND expires_at <= ?",
+                (token_digest, now),
+            )
+            return False
+
+    def delete_login_session(self, token_digest: bytes) -> None:
+        """Revoke a persisted login session."""
+
+        if len(token_digest) != 32:
+            return
+        with self._lock:
+            self.connection.execute(
+                "DELETE FROM login_sessions WHERE token_digest = ?",
+                (token_digest,),
+            )
 
     @staticmethod
     def _validate_date(value: str | None, field: str) -> str | None:

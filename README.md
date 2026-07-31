@@ -24,6 +24,7 @@ after import.
 
 There are no individual accounts. Everyone who passes the shared login sees and
 edits the same database, and every application route is gated by that session.
+Successful logins remain valid for 30 days, including across application restarts.
 
 `Stock mice` means active mice still housed in a non-breeding cage with more
 than one active mouse. Breeding pairs can be assigned manually or derived from

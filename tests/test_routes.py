@@ -128,8 +128,23 @@ def test_posts_require_same_origin_and_csrf(tmp_path: Path) -> None:
             data={"count": "0", "sex": "U"},
             headers={"Origin": BASE_URL},
         )
+        csrf_headers = _csrf(client)
+        invalid_origin = client.post(
+            "/cages/new",
+            data={"count": "0", "sex": "U"},
+            headers={**csrf_headers, "Origin": "http://127.0.0.1:9999"},
+        )
+        cross_site = client.post(
+            "/cages/new",
+            data={"count": "0", "sex": "U"},
+            headers={**csrf_headers, "Sec-Fetch-Site": "cross-site"},
+        )
     assert response.status_code == 403
     assert response.json()["code"] == "invalid_csrf"
+    assert invalid_origin.status_code == 403
+    assert invalid_origin.json()["code"] == "invalid_origin"
+    assert cross_site.status_code == 403
+    assert cross_site.json()["code"] == "invalid_origin"
 
 
 def test_login_page_protects_every_application_route(tmp_path: Path) -> None:
@@ -177,7 +192,10 @@ def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
         )
         accepted = client.post(
             "/login",
-            headers={"Origin": BASE_URL},
+            headers={
+                "Origin": "http://127.0.0.1:9999",
+                "Sec-Fetch-Site": "same-origin",
+            },
             data={"answer": "  Test-Only-Login-Answer  ", "next": "/?view=stock"},
             follow_redirects=False,
         )
@@ -209,13 +227,56 @@ def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
     assert f"{LOGIN_COOKIE_NAME}=" in cookie
     assert "httponly" in cookie
     assert "samesite=strict" in cookie
-    assert "max-age=43200" in cookie
+    assert "max-age=2592000" in cookie
     assert root.status_code == 200
     assert health.status_code == 200 and health.json()["status"] == "ok"
     assert logout.status_code == 303
     assert logout.headers["location"] == "/login"
     assert locked_again.status_code == 303
     assert replayed_session.status_code == 303
+
+
+def test_login_session_survives_application_restart(tmp_path: Path) -> None:
+    database_path = tmp_path / "persistent-login.db"
+    settings = Settings(database_path=database_path, seed_on_empty=False)
+
+    first_database = Database(database_path)
+    first_app = create_app(
+        settings=settings,
+        database=first_database,
+        run_seed=False,
+    )
+    with TestClient(
+        first_app,
+        base_url=BASE_URL,
+        client=("127.0.0.1", 50_000),
+    ) as first_client:
+        accepted = first_client.post(
+            "/login",
+            headers={"Origin": BASE_URL},
+            data={"answer": "test-only-login-answer"},
+            follow_redirects=False,
+        )
+        issued_session = first_client.cookies.get(LOGIN_COOKIE_NAME)
+
+    assert accepted.status_code == 303
+    assert issued_session is not None
+
+    second_database = Database(database_path)
+    second_app = create_app(
+        settings=settings,
+        database=second_database,
+        run_seed=False,
+    )
+    with TestClient(
+        second_app,
+        base_url=BASE_URL,
+        client=("127.0.0.1", 50_001),
+    ) as second_client:
+        second_client.cookies.set(LOGIN_COOKIE_NAME, issued_session)
+        root = second_client.get("/")
+
+    assert root.status_code == 200
 
 
 def test_login_rejects_external_return_url_and_prefixes_reverse_proxy_paths(

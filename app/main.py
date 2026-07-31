@@ -71,7 +71,11 @@ def create_app(
         allowed_hosts=resolved_settings.trusted_hosts,
         www_redirect=False,
     )
-    add_security_middleware(app, allowed_hosts=resolved_settings.trusted_hosts)
+    add_security_middleware(
+        app,
+        allowed_hosts=resolved_settings.trusted_hosts,
+        session_store=resolved_database,
+    )
     app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
     app.include_router(router)
     return app

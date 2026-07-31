@@ -6,12 +6,11 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
-import threading
 import time
 import unicodedata
 from collections.abc import Collection
 from http.cookies import CookieError, SimpleCookie
-from typing import Any, Final
+from typing import Any, Final, Protocol
 from urllib.parse import SplitResult, urlencode, urlsplit
 
 from starlette.datastructures import Headers, MutableHeaders
@@ -20,7 +19,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 CSRF_HEADER_NAME: Final[str] = "X-CSRF-Token"
 LOGIN_COOKIE_NAME: Final[str] = "mouseline_session"
-LOGIN_SESSION_MAX_AGE_SECONDS: Final[int] = 12 * 60 * 60
+LOGIN_SESSION_MAX_AGE_SECONDS: Final[int] = 30 * 24 * 60 * 60
 STATE_CHANGING_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _LOGIN_ANSWER_DIGEST: Final[bytes] = bytes.fromhex(
     "REDACTED_LOGIN_ANSWER_DIGEST"
@@ -55,12 +54,27 @@ def _route_path(scope: Scope) -> str:
     return path
 
 
-class LoginManager:
-    """Validate the shared answer and an unguessable server-side session token."""
+class LoginSessionStore(Protocol):
+    """Persistence contract for hashed login sessions."""
 
-    def __init__(self) -> None:
-        self._sessions: dict[str, float] = {}
-        self._lock = threading.Lock()
+    def create_login_session(
+        self,
+        token_digest: bytes,
+        expires_at: int,
+        *,
+        now: int,
+    ) -> None: ...
+
+    def validate_login_session(self, token_digest: bytes, *, now: int) -> bool: ...
+
+    def delete_login_session(self, token_digest: bytes) -> None: ...
+
+
+class LoginManager:
+    """Validate the shared answer and persistent, unguessable session tokens."""
+
+    def __init__(self, session_store: LoginSessionStore) -> None:
+        self._session_store = session_store
 
     @staticmethod
     def _normalized_answer(candidate: str) -> str:
@@ -74,36 +88,32 @@ class LoginManager:
         ).digest()
         return hmac.compare_digest(_LOGIN_ANSWER_DIGEST, candidate_digest)
 
+    @staticmethod
+    def _token_digest(candidate: str) -> bytes:
+        return hashlib.sha256(candidate.encode("utf-8")).digest()
+
     def issue_session_token(self) -> str:
         token = secrets.token_urlsafe(48)
-        now = time.monotonic()
-        with self._lock:
-            self._sessions = {
-                session: expires_at
-                for session, expires_at in self._sessions.items()
-                if expires_at > now
-            }
-            self._sessions[token] = now + LOGIN_SESSION_MAX_AGE_SECONDS
+        now = int(time.time())
+        self._session_store.create_login_session(
+            self._token_digest(token),
+            now + LOGIN_SESSION_MAX_AGE_SECONDS,
+            now=now,
+        )
         return token
 
     def validate_session(self, candidate: str | None) -> bool:
-        if candidate is None:
+        if candidate is None or len(candidate) > 256:
             return False
-        now = time.monotonic()
-        with self._lock:
-            expires_at = self._sessions.get(candidate)
-            if expires_at is None:
-                return False
-            if expires_at <= now:
-                self._sessions.pop(candidate, None)
-                return False
-            return True
+        return self._session_store.validate_login_session(
+            self._token_digest(candidate),
+            now=int(time.time()),
+        )
 
     def revoke_session(self, candidate: str | None) -> None:
-        if candidate is None:
+        if candidate is None or len(candidate) > 256:
             return
-        with self._lock:
-            self._sessions.pop(candidate, None)
+        self._session_store.delete_login_session(self._token_digest(candidate))
 
 
 def _session_cookie(headers: Headers) -> str | None:
@@ -206,6 +216,12 @@ def _origin_identity(parsed: SplitResult) -> tuple[str, str, int] | None:
 
 
 def _same_origin(headers: Headers, scheme: str) -> bool:
+    fetch_site = headers.get("sec-fetch-site", "").casefold()
+    if fetch_site == "same-origin":
+        return True
+    if fetch_site in {"cross-site", "same-site"}:
+        return False
+
     host = headers.get("host")
     if _host_name(host) is None:
         return False
@@ -296,9 +312,14 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, wrapped)
 
 
-def add_security_middleware(app: Any, *, allowed_hosts: Collection[str]) -> CsrfTokenManager:
+def add_security_middleware(
+    app: Any,
+    *,
+    allowed_hosts: Collection[str],
+    session_store: LoginSessionStore,
+) -> CsrfTokenManager:
     csrf_manager = CsrfTokenManager()
-    login_manager = LoginManager()
+    login_manager = LoginManager(session_store)
     app.state.csrf_manager = csrf_manager
     app.state.login_manager = login_manager
     app.add_middleware(
