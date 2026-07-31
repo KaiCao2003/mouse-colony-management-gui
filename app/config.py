@@ -8,11 +8,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Final
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOCAL_BIND_HOST: Final[str] = "127.0.0.1"
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
+LOGIN_ANSWER_PLACEHOLDER: Final[str] = "replace-with-private-answer"
 
 
 class Settings(BaseSettings):
@@ -36,6 +37,15 @@ class Settings(BaseSettings):
     allowed_hosts: str = "127.0.0.1,localhost,testserver"
     room_aliases_json: str = "{}"
     breeding_rooms: str = ""
+    login_answer: SecretStr
+
+    @field_validator("login_answer")
+    @classmethod
+    def validate_login_answer(cls, value: SecretStr) -> SecretStr:
+        candidate = value.get_secret_value().strip()
+        if not candidate or candidate == LOGIN_ANSWER_PLACEHOLDER:
+            raise ValueError("MOUSELINE_LOGIN_ANSWER must be set to a private value")
+        return value
 
     @field_validator("root_path")
     @classmethod

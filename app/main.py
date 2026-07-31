@@ -75,6 +75,7 @@ def create_app(
         app,
         allowed_hosts=resolved_settings.trusted_hosts,
         session_store=resolved_database,
+        login_answer=resolved_settings.login_answer.get_secret_value(),
     )
     app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
     app.include_router(router)

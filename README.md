@@ -45,13 +45,15 @@ to `127.0.0.1`; network access should go through a reverse proxy.
 ## Configuration
 
 Copy `.env.example` to `.env` when changing the port, database location, seed
-files, trusted proxy hosts, or URL prefix.
+files, trusted proxy hosts, or URL prefix. Set the shared answer only in the
+private `.env`; the tracked example intentionally contains a non-working placeholder.
 
 For a reverse proxy mounted at `/colony`, set:
 
 ```dotenv
 MOUSELINE_ROOT_PATH=/colony
 MOUSELINE_ALLOWED_HOSTS=127.0.0.1,localhost,colony.example.test
+MOUSELINE_LOGIN_ANSWER=replace-with-private-answer
 ```
 
 The proxy should strip `/colony` before forwarding to the loopback application.

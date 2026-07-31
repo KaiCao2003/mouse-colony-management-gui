@@ -21,9 +21,6 @@ CSRF_HEADER_NAME: Final[str] = "X-CSRF-Token"
 LOGIN_COOKIE_NAME: Final[str] = "mouseline_session"
 LOGIN_SESSION_MAX_AGE_SECONDS: Final[int] = 30 * 24 * 60 * 60
 STATE_CHANGING_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-_LOGIN_ANSWER_DIGEST: Final[bytes] = bytes.fromhex(
-    "REDACTED_LOGIN_ANSWER_DIGEST"
-)
 SECURITY_HEADERS: Final[dict[str, str]] = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": "; ".join(
@@ -73,8 +70,11 @@ class LoginSessionStore(Protocol):
 class LoginManager:
     """Validate the shared answer and persistent, unguessable session tokens."""
 
-    def __init__(self, session_store: LoginSessionStore) -> None:
+    def __init__(self, session_store: LoginSessionStore, *, answer: str) -> None:
         self._session_store = session_store
+        self._answer_digest = hashlib.sha256(
+            self._normalized_answer(answer).encode("utf-8")
+        ).digest()
 
     @staticmethod
     def _normalized_answer(candidate: str) -> str:
@@ -86,7 +86,7 @@ class LoginManager:
         candidate_digest = hashlib.sha256(
             self._normalized_answer(candidate).encode("utf-8")
         ).digest()
-        return hmac.compare_digest(_LOGIN_ANSWER_DIGEST, candidate_digest)
+        return hmac.compare_digest(self._answer_digest, candidate_digest)
 
     @staticmethod
     def _token_digest(candidate: str) -> bytes:
@@ -319,9 +319,10 @@ def add_security_middleware(
     *,
     allowed_hosts: Collection[str],
     session_store: LoginSessionStore,
+    login_answer: str,
 ) -> CsrfTokenManager:
     csrf_manager = CsrfTokenManager()
-    login_manager = LoginManager(session_store)
+    login_manager = LoginManager(session_store, answer=login_answer)
     app.state.csrf_manager = csrf_manager
     app.state.login_manager = login_manager
     app.add_middleware(

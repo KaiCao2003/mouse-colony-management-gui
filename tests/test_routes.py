@@ -6,14 +6,17 @@ from html import unescape
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import LOGIN_ANSWER_PLACEHOLDER, Settings
 from app.database import Database
 from app.main import create_app
 from app.security import LOGIN_COOKIE_NAME
 
 BASE_URL = "http://127.0.0.1:8765"
+TEST_LOGIN_ANSWER = "test-only-login-answer"
 TEST_ROOM_ALIASES = {
     "ROOM-REGULAR": "Regular Cycle room",
     "ROOM-REVERSE": "Reverse Cycle room",
@@ -38,6 +41,7 @@ def _client(
             database_path=tmp_path / "route-test.db",
             seed_on_empty=False,
             root_path=root_path,
+            login_answer=TEST_LOGIN_ANSWER,
         ),
         database=database,
         run_seed=False,
@@ -93,6 +97,11 @@ def _sort_header(html: str, field: str) -> tuple[str, str]:
     link = re.search(r'<a\b[^>]*href="([^"]+)"', header)
     assert link is not None, f"Missing sort link for {field}"
     return header, unescape(link.group(1))
+
+
+def test_public_login_answer_placeholder_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="MOUSELINE_LOGIN_ANSWER"):
+        Settings(login_answer=LOGIN_ANSWER_PLACEHOLDER)
 
 
 def test_create_cage_and_render_detail(tmp_path: Path) -> None:
@@ -163,10 +172,10 @@ def test_login_page_protects_every_application_route(tmp_path: Path) -> None:
     assert login.status_code == 200
     assert "What's the PI's first name?" in login.text
     assert 'type="password" name="answer"' in login.text
-    assert "test-only-login-answer" not in login.text.casefold()
+    assert TEST_LOGIN_ANSWER not in login.text
     assert "app.js" not in login.text
     assert stylesheet.status_code == script.status_code == 200
-    assert "test-only-login-answer" not in f"{stylesheet.text}{script.text}".casefold()
+    assert TEST_LOGIN_ANSWER not in f"{stylesheet.text}{script.text}"
 
 
 def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
@@ -180,7 +189,7 @@ def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
         )
         accepted = client.post(
             "/login",
-            data={"answer": "  Test-Only-Login-Answer  ", "next": "/?view=stock"},
+            data={"answer": f"  {TEST_LOGIN_ANSWER.upper()}  ", "next": "/?view=stock"},
             follow_redirects=False,
         )
         root = client.get("/")
@@ -218,7 +227,11 @@ def test_login_normalizes_answer_sets_secure_cookie_and_logout_clears_it(
 
 def test_login_session_survives_application_restart(tmp_path: Path) -> None:
     database_path = tmp_path / "persistent-login.db"
-    settings = Settings(database_path=database_path, seed_on_empty=False)
+    settings = Settings(
+        database_path=database_path,
+        seed_on_empty=False,
+        login_answer=TEST_LOGIN_ANSWER,
+    )
 
     first_database = Database(database_path)
     first_app = create_app(
@@ -234,7 +247,7 @@ def test_login_session_survives_application_restart(tmp_path: Path) -> None:
         accepted = first_client.post(
             "/login",
             headers={"Origin": BASE_URL},
-            data={"answer": "test-only-login-answer"},
+            data={"answer": TEST_LOGIN_ANSWER},
             follow_redirects=False,
         )
         issued_session = first_client.cookies.get(LOGIN_COOKIE_NAME)
@@ -275,7 +288,7 @@ def test_login_rejects_external_return_url_and_prefixes_reverse_proxy_paths(
         accepted = client.post(
             "/login",
             headers={"Origin": BASE_URL},
-            data={"answer": "test-only-login-answer", "next": "https://example.com/"},
+            data={"answer": TEST_LOGIN_ANSWER, "next": "https://example.com/"},
             follow_redirects=False,
         )
 
