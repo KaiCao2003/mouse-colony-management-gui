@@ -137,3 +137,12 @@ Photo genotype text is shown separately from the configured genotype choices.
 The server requires the `photo` extra and the OCR model files in
 `MOUSELINE_OCR_MODELS` (default `/opt/senzailab/backend/runtime/colony-ocr-models`).
 Recognition uses CPU inference and does not send photos to an external service.
+
+Set `MOUSELINE_PHOTO_DIRECTORY` to the permanent archive directory (default
+`data/photos`). Production uses `/mnt/senzailab/Shared/Apps/Colony/IMGS`.
+Each valid upload preserves its original bytes and an oriented JPEG preview,
+even when OCR fails. Photos are grouped by cage database ID; uploads without a
+matching or explicitly selected cage stay in `unassigned`. Re-uploading the same
+photo to the same cage does not add a duplicate. The archive has no automatic cleanup.
+Cage pages show a collapsed **Show pictures** section only when photos exist;
+previews and original downloads require the same login as the rest of the app.

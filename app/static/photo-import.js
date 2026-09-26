@@ -12,6 +12,8 @@
   const rowList = root.querySelector("[data-photo-rows]");
   const rowTemplate = root.querySelector("[data-photo-row]");
   const applyButton = root.querySelector("[data-photo-apply]");
+  const gallery = document.querySelector("[data-photo-gallery]");
+  const galleryItems = gallery.querySelector("[data-photo-gallery-items]");
   const csrfMeta = document.querySelector('meta[name="csrf-token"]');
   const mouseForms = [...document.querySelectorAll(".edit-animal-form")];
   const targets = new Map(mouseForms.map((form) => [form.id, form]));
@@ -29,6 +31,41 @@
     cageMatches = false;
     applyButton.disabled = true;
     showStatus("");
+  }
+
+  async function refreshGallery() {
+    const response = await fetch(gallery.dataset.photosUrl, {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Could not refresh pictures.");
+    const result = await response.json();
+    const pictures = result.photos.map((photo) => {
+      const figure = document.createElement("figure");
+      figure.className = "photo-gallery__item";
+      const previewLink = document.createElement("a");
+      previewLink.href = photo.preview_url;
+      previewLink.target = "_blank";
+      previewLink.rel = "noopener";
+      const image = document.createElement("img");
+      image.src = photo.preview_url;
+      image.alt = photo.filename;
+      image.loading = "lazy";
+      previewLink.append(image);
+      const caption = document.createElement("figcaption");
+      const filename = document.createElement("span");
+      filename.textContent = photo.filename;
+      const originalLink = document.createElement("a");
+      originalLink.href = photo.original_url;
+      originalLink.download = photo.filename;
+      originalLink.textContent = "Download original";
+      caption.append(filename, originalLink);
+      figure.append(previewLink, caption);
+      return figure;
+    });
+    galleryItems.replaceChildren(...pictures);
+    gallery.hidden = pictures.length === 0;
   }
 
   function showPreview(result) {
@@ -113,6 +150,11 @@
     } catch (error) {
       showStatus(error instanceof Error ? error.message : "Could not read this photo.");
     } finally {
+      try {
+        await refreshGallery();
+      } catch {
+        showStatus([status.textContent, "Could not refresh pictures."].filter(Boolean).join(" "));
+      }
       reading = false;
       photoFile.disabled = false;
       readButton.removeAttribute("aria-disabled");

@@ -78,6 +78,8 @@
         </div>
       </section>
 
+      {% include '_photo_gallery.html' %}
+
       <section id="cage-actions" class="panel action-panel" aria-label="Cage actions">
         {% if cage.is_breeding_pair and cage_status == 'active' %}
         <div class="section-heading section-heading--compact"><div><h2 id="cage-actions-title">Add mice</h2></div></div>
@@ -98,6 +100,7 @@
             <summary><span>Read cage card</span></summary>
             <div class="disclosure__body">
               <form class="photo-upload" method="post" action="{{ base_path }}/photos/recognize" enctype="multipart/form-data" data-photo-form>
+                <input type="hidden" name="cage_id" value="{{ cage.id }}">
                 <label class="field"><span>Photo</span><input type="file" name="photo_file" accept="image/*,.heic,.heif" required></label>
                 <button class="button button--small" type="submit">Read photo</button>
               </form>

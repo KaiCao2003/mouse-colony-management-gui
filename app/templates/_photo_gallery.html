@@ -1,0 +1,11 @@
+<details class="panel disclosure photo-gallery" data-photo-gallery data-photos-url="{{ base_path }}/cages/{{ cage.id }}/photos"{% if not photos %} hidden{% endif %}>
+  <summary><span>Show pictures</span></summary>
+  <div class="disclosure__body photo-gallery__grid" data-photo-gallery-items>
+    {% for photo in photos %}
+      <figure class="photo-gallery__item">
+        <a href="{{ photo.preview_url }}" target="_blank" rel="noopener"><img src="{{ photo.preview_url }}" alt="{{ photo.filename }}" loading="lazy"></a>
+        <figcaption><span>{{ photo.filename }}</span><a href="{{ photo.original_url }}" download="{{ photo.filename }}">Download original</a></figcaption>
+      </figure>
+    {% endfor %}
+  </div>
+</details>

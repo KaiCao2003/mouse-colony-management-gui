@@ -2615,3 +2615,40 @@ a.tag:hover {
 .photo-genotype {
   white-space: normal;
 }
+
+.photo-gallery__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  background: #fff;
+}
+
+.photo-gallery__item {
+  min-width: 0;
+  margin: 0;
+}
+
+.photo-gallery__item img {
+  display: block;
+  width: 100%;
+  height: 260px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.photo-gallery__item figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.photo-gallery__item figcaption span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.photo-gallery__item figcaption a {
+  flex-shrink: 0;
+}

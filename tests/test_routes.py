@@ -44,6 +44,7 @@ def _client(
     app = create_app(
         settings=Settings(
             database_path=tmp_path / "route-test.db",
+            photo_directory=tmp_path / "photos",
             seed_on_empty=False,
             root_path=root_path,
             login_answer=TEST_LOGIN_ANSWER,

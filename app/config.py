@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     local_port: int = Field(default=8765, ge=1024, le=65535)
     database_path: Path = PROJECT_ROOT / "data" / "mouseline.db"
+    photo_directory: Path = PROJECT_ROOT / "data" / "photos"
     seed_csv_path: Path = PROJECT_ROOT / "seed" / "cage-cards.csv"
     seed_xlsx_path: Path = PROJECT_ROOT / "seed" / "mouse-line.xlsx"
     seed_on_empty: bool = True

@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.database import Database
+from app.photo_import import photos_for_cage
 from app.reconciliation import (
     MAX_AOPS_CSV_BYTES,
     AopsCsvValidationError,
@@ -503,6 +504,7 @@ def cage_detail(
             "return_query": f"?{urlencode({'return_to': back_url})}",
             "csrf_token": csrf_token_for_request(request),
             "cage": cage,
+            "photos": photos_for_cage(request, cage_id),
             "animals": database.list_animals(cage_id, include_inactive=True),
             **_variable_form_options(database),
             "all_tags": database.list_tags(),
