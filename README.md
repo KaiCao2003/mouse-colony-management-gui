@@ -26,6 +26,10 @@ There are no individual accounts. Everyone who passes the shared login sees and
 edits the same database, and every application route is gated by that session.
 Successful logins remain valid for 30 days, including across application restarts.
 
+An optional read-only integration API can resolve one exact mouse identifier for
+Brain3D/camera3d. It uses a separate bearer token, never accepts the browser login
+cookie, and remains behind the same loopback/SSH boundary. It does not mutate colony data.
+
 `Stock mice` means active mice still housed in a non-breeding cage with more
 than one active mouse. Breeding pairs can be assigned manually or derived from
 the installation's configured breeding-room rule.
@@ -41,6 +45,29 @@ Double-click `run.command`, or run:
 The first start creates `data/mouseline.db`. If seed files are configured, it
 imports them when that database is empty. The application process always binds
 to `127.0.0.1`; network access should go through a reverse proxy.
+
+## Review an AOPS cage-card export
+
+Open **Update from CSV** and upload the NU Personal Page / AOPS Cage Cards CSV to compare it with
+the current local records. Analysis only stages a review: it does not mutate the
+colony. The entire CSV must pass strict header, row, status, count, date, and
+duplicate-ID validation before any differences are shown; one malformed record
+rejects the whole upload.
+
+Choose **Preview updates**, review the proposed changes, then choose
+**Apply all updates** or apply individual changes. The most recent review stays
+available when you return to the page, including its saved application results.
+
+The review can propose missing cages, append-only mouse records, an
+`on_order` cage becoming active, and soft deactivation when AOPS marks a cage
+inactive. Apply proposals individually or in bulk, or choose **Keep local** for
+changes that should not be imported. Applying a proposal never overwrites
+existing mouse metadata, mouse history, or locally maintained cage metadata.
+Fewer rows in an export never delete local cages or mice, and a local record's
+absence from AOPS is not treated as a deletion instruction.
+
+The raw CSV and PI fields are not stored. Mouseline retains only the normalized
+differences and audit metadata needed to review and record approved changes.
 
 ## Configuration
 
@@ -60,6 +87,26 @@ The proxy should strip `/colony` before forwarding to the loopback application.
 The shared login is not a substitute for network access control, so expose the
 application only on a trusted network.
 
+## Brain3D/camera3d subject lookup
+
+Set a distinct random token (at least 32 characters) in the private `.env`:
+
+```dotenv
+MOUSELINE_INTEGRATION_TOKEN=<random-secret>
+```
+
+Keep the service bound to loopback. From a workstation, forward it over SSH (the
+deployed instance currently uses port `3004`):
+
+```bash
+ssh -N -L 13004:127.0.0.1:3004 hhw9l84
+```
+
+Then resolve an exact generated or legacy mouse ID with
+`GET http://127.0.0.1:13004/api/v1/animals/resolve?identifier=...` and an
+`Authorization: Bearer ...` header. The response contains a canonical public ID,
+minimal colony metadata, and a SHA-256 receipt suitable for storing with a plan.
+
 ## Data safety
 
 - `data/*` is excluded from Git.
@@ -67,3 +114,25 @@ application only on a trusted network.
 - The source files stay read-only; the database is seeded only when it is empty.
 - Normal use marks records inactive rather than deleting them.
 - Back up `data/mouseline.db` before upgrades or migration.
+
+## Variables
+
+Open **Variables** to manage genotype, mouse user, surgery type, surgery operator,
+and room choices. Existing values populate the initial catalog. The mouse, cage,
+and surgery forms use these shared dropdowns.
+
+Renaming an option also updates its existing records, including inactive mice.
+Deleting an option removes it from new choices while preserving saved values.
+Room aliases and breeding-room
+classification are retained when a room is renamed.
+
+## Cage card photos
+
+The cage page can read a JPEG, PNG, or HEIC card photo on the server and fill
+mouse edit drafts. Review the detected cage, choose each target mouse, then use
+**Apply to mice** and **Save all mice**. Missing fields leave existing values alone.
+Photo genotype text is shown separately from the configured genotype choices.
+
+The server requires the `photo` extra and the OCR model files in
+`MOUSELINE_OCR_MODELS` (default `/opt/senzailab/backend/runtime/colony-ocr-models`).
+Recognition uses CPU inference and does not send photos to an external service.

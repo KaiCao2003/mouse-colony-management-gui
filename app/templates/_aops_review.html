@@ -1,0 +1,208 @@
+<section id="aops-review" class="workspace-view" role="tabpanel" aria-labelledby="workspace-tab-aops-review" data-workspace-panel="aops-review" hidden>
+  <section class="page-heading" aria-labelledby="aops-page-title">
+    <div>
+      <h1 id="aops-page-title" data-workspace-heading tabindex="-1">Update from CSV</h1>
+      <p class="lede">Upload your NU / AOPS Cage Cards export, preview the differences, then apply the updates.</p>
+    </div>
+    <a class="button button--quiet" href="#cages">Back to cages</a>
+  </section>
+
+  <section class="panel aops-upload" aria-labelledby="aops-upload-title">
+    <div class="section-heading">
+      <div>
+        <h2 id="aops-upload-title">1. Upload Cage Cards CSV</h2>
+        <p>Choose the CSV exported from NU Personal Page. Previewing does not change colony records.</p>
+      </div>
+    </div>
+    <form class="aops-upload__form" method="post" action="{{ base_path }}/aops-reconcile/analyze" enctype="multipart/form-data" data-return-hash="#aops-review">
+      <label class="field aops-upload__field" for="aops-csv">
+        <span>CSV file</span>
+        <input id="aops-csv" type="file" name="csv_file" accept=".csv,text/csv" aria-describedby="aops-upload-help" required>
+      </label>
+      <button class="button button--primary" type="submit" data-pending-label="Analyzing…">Preview updates</button>
+    </form>
+    <div id="aops-upload-help" class="aops-safety-note">
+      <strong>Existing colony data stays protected.</strong>
+      <span>Mouse Line only proposes missing cages, new mouse records, and cage-status changes. It never overwrites mouse IDs or details, history, local room, census dates, or protocol values.</span>
+    </div>
+  </section>
+
+  {% if aops_reconciliation %}
+    <section class="aops-results" aria-labelledby="aops-results-title" data-aops-results data-aops-reconciliation-id="{{ aops_reconciliation.id }}">
+      <div class="panel aops-results__summary">
+        <div class="section-heading aops-results__heading">
+          <div>
+            <p class="aops-results__source">{{ aops_reconciliation.source_filename or 'AOPS export' }} · {{ aops_reconciliation.row_count }} row{% if aops_reconciliation.row_count != 1 %}s{% endif %}</p>
+            <h2 id="aops-results-title" tabindex="-1">{% if aops_reconciliation.actionable_pending_count %}2. Review and apply{% elif aops_reconciliation.applied_count %}Updates saved{% else %}Review complete{% endif %}</h2>
+            {% if aops_reconciliation.actionable_pending_count %}
+              <p>This preview is saved. Apply updates individually or all at once when ready.</p>
+            {% elif aops_reconciliation.applied_count %}
+              <p>Applied changes are saved in Mouse Line. Upload a newer export to check for further updates.</p>
+            {% else %}
+              <p>No updates are waiting to be applied. Any differences kept local are listed below.</p>
+            {% endif %}
+          </div>
+          {% if aops_reconciliation.actionable_pending_count %}
+            <span class="aops-run-state aops-run-state--pending">{{ aops_reconciliation.actionable_pending_count }} awaiting review</span>
+          {% else %}
+            <span class="aops-run-state aops-run-state--complete">Review complete</span>
+          {% endif %}
+        </div>
+
+        <dl class="aops-summary-grid" aria-label="Reconciliation summary">
+          <div class="aops-summary-item"><dt>AOPS rows</dt><dd>{{ aops_reconciliation.row_count }}</dd></div>
+          <div class="aops-summary-item"><dt>Already matched</dt><dd>{{ aops_reconciliation.matched_count }}</dd></div>
+          <div class="aops-summary-item"><dt>Protected locally</dt><dd>{{ aops_reconciliation.protected_count }}</dd></div>
+          <div class="aops-summary-item"><dt>Applied</dt><dd>{{ aops_reconciliation.applied_count }}</dd></div>
+          <div class="aops-summary-item"><dt>Kept local</dt><dd>{{ aops_reconciliation.kept_local_count }}</dd></div>
+        </dl>
+
+        {% if aops_reconciliation.actionable_pending_count %}
+          <div class="aops-bulk-actions">
+            <div>
+              <strong>Review {{ aops_reconciliation.actionable_pending_count }} pending update{% if aops_reconciliation.actionable_pending_count != 1 %}s{% endif %}</strong>
+              <p>Bulk actions affect pending, actionable rows only. Protected local differences never change.</p>
+            </div>
+            <div class="aops-bulk-actions__forms">
+              <form method="post" action="{{ base_path }}/aops-reconcile/{{ aops_reconciliation.id }}/apply-all" data-return-hash="#aops-review">
+                <button class="button button--primary" type="submit" data-pending-label="Applying…">Apply all {{ aops_reconciliation.actionable_pending_count }} update{% if aops_reconciliation.actionable_pending_count != 1 %}s{% endif %}</button>
+              </form>
+              <form method="post" action="{{ base_path }}/aops-reconcile/{{ aops_reconciliation.id }}/keep-all" data-return-hash="#aops-review">
+                <button class="button" type="submit" data-pending-label="Keeping local…" data-confirm="Keep every pending difference in Mouse Line? No colony data will change, and the differences may appear again in a future AOPS review.">Keep all in Mouse Line</button>
+              </form>
+            </div>
+          </div>
+        {% endif %}
+      </div>
+
+      {% set group_definitions = [
+        {'kind': 'add_cage', 'title': 'New cages', 'description': 'These cage cards exist in AOPS but not in Mouse Line. Applying creates only the missing cage and its new mouse records.'},
+        {'kind': 'add_mice', 'title': 'Additional mice', 'description': 'AOPS lists more mice in these cages. Applying adds only the difference—including inactive historical records when shown—and leaves every existing mouse unchanged.'},
+        {'kind': 'activate_cage', 'title': 'Cages to activate', 'description': 'AOPS now lists these cages as active. Applying changes cage status and adds missing mouse records only when shown.'},
+        {'kind': 'deactivate_cage', 'title': 'Cages to deactivate', 'description': 'AOPS lists these cages as deactivated. Applying marks the cage and its active mice inactive while retaining all history.'},
+        {'kind': 'local_ahead', 'title': 'Mouse Line has more records', 'description': 'Local mouse records are protected. AOPS review never removes mice to make a count smaller.'},
+        {'kind': 'status_conflict', 'title': 'Status conflicts protected', 'description': 'These status differences are not safe to resolve automatically, so Mouse Line remains unchanged.'},
+        {'kind': 'metadata_protected', 'title': 'Local metadata protected', 'description': 'Room, census-date, or protocol values differ. Mouse Line keeps its local metadata by design.'}
+      ] %}
+      <div class="aops-groups">
+        {% for group in group_definitions %}
+          {% set group_items = aops_reconciliation.groups.get(group.kind, []) %}
+          {% if group_items %}
+            <section class="panel aops-group" aria-labelledby="aops-group-{{ group.kind }}">
+              <div class="section-heading aops-group__heading">
+                <div>
+                  <h3 id="aops-group-{{ group.kind }}">{{ group.title }} <span>{{ group_items | length }}</span></h3>
+                  <p>{{ group.description }}</p>
+                </div>
+              </div>
+              <div class="aops-change-list">
+                {% for item in group_items %}
+                  {% set item_decision = item.decision or 'pending' %}
+                  {% set protected_item = group.kind in ['local_ahead', 'status_conflict', 'metadata_protected'] %}
+                  {% if protected_item %}
+                    {% set decision_state = 'protected' %}
+                    {% if group.kind == 'metadata_protected' %}
+                      {% set decision_label = 'Kept local by design' %}
+                    {% else %}
+                      {% set decision_label = 'Protected' %}
+                    {% endif %}
+                  {% elif item_decision == 'applied' %}
+                    {% set decision_state = 'applied' %}
+                    {% set decision_label = 'Applied' %}
+                  {% elif item_decision in ['kept_local', 'keep_local', 'kept'] %}
+                    {% set decision_state = 'kept-local' %}
+                    {% set decision_label = 'Kept in Mouse Line' %}
+                  {% else %}
+                    {% set decision_state = 'pending' %}
+                    {% set decision_label = 'Pending review' %}
+                  {% endif %}
+                  <article id="aops-item-{{ item.id }}" class="aops-change aops-change--{{ decision_state }}">
+                    <header class="aops-change__header">
+                      <div class="aops-change__identity">
+                        {% if item.cage_id %}
+                          <a class="record-link" href="{{ base_path }}/cages/{{ item.cage_id }}">{{ item.cage_card_id }}</a>
+                        {% else %}
+                          <strong>{{ item.cage_card_id }}</strong>
+                        {% endif %}
+                        <span class="aops-change__kind">{{ group.title }}</span>
+                      </div>
+                      <span class="aops-decision aops-decision--{{ decision_state }}">{{ decision_label }}</span>
+                    </header>
+
+                    <div class="aops-change__comparison">
+                      <div class="aops-snapshot aops-snapshot--official">
+                        <span class="aops-snapshot__label">AOPS</span>
+                        <strong>
+                          {% if item.official_status == 'inactive' %}Deactivated{% elif item.official_status == 'on_order' %}On order{% else %}{{ item.official_status | replace('_', ' ') | title }}{% endif %}
+                        </strong>
+                        <span>{{ item.official_count }} {% if item.official_count == 1 %}mouse{% else %}mice{% endif %}{% if item.room %} · {{ item.room }}{% endif %}</span>
+                      </div>
+                      <span class="aops-change__arrow" aria-hidden="true">→</span>
+                      <div class="aops-snapshot">
+                        <span class="aops-snapshot__label">Mouse Line</span>
+                        {% if item.local_status %}
+                          <strong>{{ item.local_status | replace('_', ' ') | title }}</strong>
+                          <span>{{ item.local_count }} {% if item.local_count == 1 %}mouse{% else %}mice{% endif %}</span>
+                        {% else %}
+                          <strong>Not recorded</strong>
+                          <span>No local cage</span>
+                        {% endif %}
+                      </div>
+                    </div>
+
+                    <div class="aops-change__effect">
+                      <span>Effect</span>
+                      {% set metadata_differences = item.protected_details.get('differences', []) if item.protected_details else [] %}
+                      {% if group.kind == 'metadata_protected' and metadata_differences %}
+                        {% for difference in metadata_differences %}
+                          <p class="aops-metadata-difference"><strong>{{ difference.field | replace('_', ' ') | title }}</strong>: AOPS {% if difference.official is not none %}{{ difference.official }}{% else %}<span class="muted">blank</span>{% endif %}; Mouse Line {% if difference.local is not none %}{{ difference.local }}{% else %}<span class="muted">blank</span>{% endif %}. Kept local.</p>
+                        {% endfor %}
+                      {% elif item.effect %}
+                        <p>{{ item.effect }}</p>
+                      {% elif group.kind == 'add_cage' %}
+                        <p>Create this missing cage and {{ item.official_count }} new mouse record{% if item.official_count != 1 %}s{% endif %}. Existing records remain unchanged.</p>
+                      {% elif group.kind == 'add_mice' %}
+                        <p>Add {{ item.delta }} new mouse record{% if item.delta != 1 %}s{% endif %}. Existing mouse IDs and details remain unchanged.</p>
+                      {% elif group.kind == 'activate_cage' %}
+                        <p>Set this cage to active{% if item.delta and item.delta > 0 %} and add {{ item.delta }} new mouse record{% if item.delta != 1 %}s{% endif %}{% endif %}. Existing details and history remain unchanged.</p>
+                      {% elif group.kind == 'deactivate_cage' %}
+                        <p>Mark this cage and its active mice inactive. Keep all IDs, details, and history.</p>
+                      {% else %}
+                        <p>No local change. This difference is protected by design.</p>
+                      {% endif %}
+                      {% if item.resolution_note and item.resolution_note != item.effect and group.kind != 'metadata_protected' %}<p class="aops-change__note">{{ item.resolution_note }}</p>{% endif %}
+                    </div>
+
+                    {% if decision_state == 'pending' %}
+                      <div class="aops-change__actions">
+                        <form method="post" action="{{ base_path }}/aops-reconcile/{{ aops_reconciliation.id }}/items/{{ item.id }}/apply" data-return-hash="#aops-review">
+                          <button class="button button--small{% if group.kind == 'deactivate_cage' %} button--danger-quiet{% else %} button--primary{% endif %}" type="submit" aria-label="Apply AOPS update for {{ item.cage_card_id }}" data-pending-label="Applying…"{% if group.kind == 'deactivate_cage' %} data-confirm="Apply the AOPS deactivation for {{ item.cage_card_id }}? The cage and its active mice will be marked inactive; IDs, details, and history will remain."{% endif %}>Apply AOPS update</button>
+                        </form>
+                        <form method="post" action="{{ base_path }}/aops-reconcile/{{ aops_reconciliation.id }}/items/{{ item.id }}/keep-local" data-return-hash="#aops-review">
+                          <button class="button button--quiet button--small" type="submit" aria-label="Keep Mouse Line values for {{ item.cage_card_id }}" data-pending-label="Keeping local…">Keep Mouse Line</button>
+                        </form>
+                      </div>
+                    {% elif decision_state == 'kept-local' %}
+                      <p class="aops-change__resolution">No colony data changed. This difference may appear again in a future review.</p>
+                    {% elif decision_state == 'applied' %}
+                      <p class="aops-change__resolution">This AOPS update has been applied.</p>
+                    {% else %}
+                      <p class="aops-change__resolution">No action is available because local data is protected.</p>
+                    {% endif %}
+                  </article>
+                {% endfor %}
+              </div>
+            </section>
+          {% endif %}
+        {% endfor %}
+      </div>
+
+      {% if not aops_reconciliation.pending_count and not aops_reconciliation.protected_count and not aops_reconciliation.applied_count and not aops_reconciliation.kept_local_count %}
+        <section class="panel empty-state" aria-label="AOPS review result">
+          <h3>Mouse Line matches this AOPS export</h3>
+          <p>No differences need review.</p>
+        </section>
+      {% endif %}
+    </section>
+  {% endif %}
+</section>

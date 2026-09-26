@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -19,6 +20,21 @@ _SEXES: Final[frozenset[str]] = frozenset({"M", "F", "U"})
 _CAGE_STATUSES: Final[frozenset[str]] = frozenset({"active", "inactive", "on_order"})
 _ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Z]-\d{4}$")
 _CAGE_VIEWS: Final[frozenset[str]] = frozenset({"all", "stock", "using", "single", "breeding"})
+_VARIABLE_CATEGORIES: Final[frozenset[str]] = frozenset(
+    {"genotype", "mouse_user", "surgery_type", "operator", "room"}
+)
+_AOPS_ACTIONABLE_KINDS: Final[frozenset[str]] = frozenset(
+    {"add_cage", "add_mice", "activate_cage", "deactivate_cage"}
+)
+_AOPS_PROTECTED_KINDS: Final[frozenset[str]] = frozenset(
+    {"local_ahead", "status_conflict", "metadata_protected"}
+)
+
+
+class AmbiguousAnimalIdentifierError(ValueError):
+    """Raised when a legacy identifier maps to more than one animal."""
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +103,26 @@ CREATE TABLE IF NOT EXISTS surgery_types (
     name TEXT NOT NULL UNIQUE COLLATE NOCASE
 );
 
+CREATE TABLE IF NOT EXISTS variable_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+    room_alias TEXT,
+    is_breeding_room INTEGER NOT NULL DEFAULT 0 CHECK(is_breeding_room IN (0, 1)),
+    UNIQUE(category, name)
+);
+
+CREATE TABLE IF NOT EXISTS variable_catalog_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1)
+);
+
+CREATE TABLE IF NOT EXISTS room_settings (
+    name TEXT PRIMARY KEY COLLATE NOCASE,
+    room_alias TEXT,
+    is_breeding_room INTEGER NOT NULL DEFAULT 0 CHECK(is_breeding_room IN (0, 1))
+);
+
 CREATE TABLE IF NOT EXISTS surgeries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     animal_id INTEGER NOT NULL REFERENCES animals(id) ON DELETE CASCADE,
@@ -106,6 +142,46 @@ WHEN (SELECT COUNT(*) FROM surgeries WHERE animal_id = NEW.animal_id) >= 4
 BEGIN
     SELECT RAISE(ABORT, 'A mouse can have at most 4 surgery records.');
 END;
+
+CREATE TABLE IF NOT EXISTS aops_reconciliations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_filename TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK(length(source_sha256) = 64),
+    row_count INTEGER NOT NULL CHECK(row_count >= 0),
+    matched_count INTEGER NOT NULL CHECK(matched_count >= 0),
+    protected_count INTEGER NOT NULL CHECK(protected_count >= 0),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS aops_reconciliation_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reconciliation_id INTEGER NOT NULL
+        REFERENCES aops_reconciliations(id) ON DELETE CASCADE,
+    cage_card_id TEXT NOT NULL COLLATE NOCASE,
+    kind TEXT NOT NULL CHECK(kind IN (
+        'add_cage', 'add_mice', 'activate_cage', 'deactivate_cage',
+        'local_ahead', 'status_conflict', 'metadata_protected'
+    )),
+    official_status TEXT NOT NULL
+        CHECK(official_status IN ('active', 'inactive', 'on_order')),
+    official_count INTEGER NOT NULL CHECK(official_count BETWEEN 0 AND 1000),
+    local_cage_id INTEGER REFERENCES cages(id),
+    local_status TEXT CHECK(local_status IN ('active', 'inactive', 'on_order')),
+    local_count INTEGER CHECK(local_count IS NULL OR local_count >= 0),
+    official_room TEXT,
+    official_protocol TEXT,
+    official_on_census_date TEXT,
+    official_off_census_date TEXT,
+    protected_detail TEXT,
+    decision TEXT NOT NULL DEFAULT 'pending'
+        CHECK(decision IN ('pending', 'applied', 'kept_local')),
+    resolution_note TEXT,
+    decided_at TEXT,
+    UNIQUE(reconciliation_id, cage_card_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS aops_reconciliation_items_run_decision_idx
+ON aops_reconciliation_items(reconciliation_id, decision, id);
 
 CREATE TABLE IF NOT EXISTS login_sessions (
     token_digest BLOB PRIMARY KEY CHECK(length(token_digest) = 32),
@@ -141,6 +217,8 @@ class Database:
             for room, alias in self._room_aliases.items()
             if room.casefold() in self._breeding_rooms
         )
+        self._variable_room_settings: dict[str, tuple[str | None, bool]] = {}
+        self._variable_options_initialized = False
         self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
 
@@ -166,6 +244,8 @@ class Database:
                 if database_file.exists():
                     os.chmod(database_file, 0o600)
             connection.executescript(SCHEMA)
+            self._migrate_variable_catalog(connection)
+            self._load_variable_room_settings(connection)
             cage_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(cages)").fetchall()
             }
@@ -209,12 +289,20 @@ class Database:
                 ON animals(mouse_user COLLATE NOCASE)
                 """
             )
-            for name in ("Headplate", "Probe implant", "Headplate + probe implant"):
-                connection.execute(
-                    "INSERT OR IGNORE INTO surgery_types(name) VALUES (?)",
-                    (name,),
-                )
+            if (
+                connection.execute("SELECT 1 FROM variable_catalog_state WHERE id = 1").fetchone()
+                is None
+            ):
+                for name in ("Headplate", "Probe implant", "Headplate + probe implant"):
+                    connection.execute(
+                        "INSERT OR IGNORE INTO surgery_types(name) VALUES (?)",
+                        (name,),
+                    )
             self._connection = connection
+            self._variable_options_initialized = (
+                connection.execute("SELECT 1 FROM variable_catalog_state WHERE id = 1").fetchone()
+                is not None
+            )
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -353,12 +441,16 @@ class Database:
 
     def _is_breeding_room(self, room: str | None) -> bool:
         cleaned = self._clean(room)
+        if cleaned is not None and cleaned.casefold() in self._variable_room_settings:
+            return self._variable_room_settings[cleaned.casefold()][1]
         return cleaned is not None and cleaned.casefold() in self._breeding_rooms
 
     def _room_alias(self, room: str | None) -> str | None:
         cleaned = self._clean(room)
         if cleaned is None:
             return None
+        if cleaned.casefold() in self._variable_room_settings:
+            return self._variable_room_settings[cleaned.casefold()][0]
         for canonical_room, alias in self._room_aliases.items():
             if cleaned.casefold() == canonical_room.casefold():
                 return alias
@@ -827,6 +919,814 @@ class Database:
                 )
 
         result = self.get_cage(destination_cage_id)
+        assert result is not None
+        return result
+
+    @classmethod
+    def _normalize_aops_row(cls, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate the parser's normalized representation before staging it."""
+
+        cage_card_value = row.get("cage_card_id")
+        if not isinstance(cage_card_value, str):
+            raise ValueError("AOPS cage card ID is required.")
+        cage_card_id = cls._validate_cage_card_id(cage_card_value)
+        if cage_card_id is None:
+            raise ValueError("AOPS cage card ID is required.")
+        cage_card_id = cage_card_id.upper()
+
+        status_value = row.get("status")
+        if not isinstance(status_value, str):
+            raise ValueError(f"{cage_card_id} has no AOPS status.")
+        status = status_value.strip().casefold().replace(" ", "_")
+        if status not in _CAGE_STATUSES:
+            raise ValueError(f"{cage_card_id} has an invalid AOPS status.")
+
+        count_value = row.get("count")
+        if isinstance(count_value, bool):
+            raise ValueError(f"{cage_card_id} has an invalid AOPS animal count.")
+        if isinstance(count_value, int):
+            count = count_value
+        elif isinstance(count_value, str) and re.fullmatch(r"\d+", count_value.strip()):
+            count = int(count_value.strip())
+        else:
+            raise ValueError(f"{cage_card_id} has an invalid AOPS animal count.")
+        if count < 0 or count > 1000:
+            raise ValueError(f"{cage_card_id} AOPS animal count must be between 0 and 1000.")
+
+        def optional_text(key: str, field: str, max_length: int | None = None) -> str | None:
+            value = row.get(key)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise ValueError(f"{cage_card_id} {field} must be text.")
+            cleaned = cls._clean(value)
+            if cleaned is not None and max_length is not None and len(cleaned) > max_length:
+                raise ValueError(
+                    f"{cage_card_id} {field} must be {max_length} characters or fewer."
+                )
+            return cleaned
+
+        def optional_date(key: str, field: str) -> str | None:
+            value = row.get(key)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise ValueError(f"{cage_card_id} {field} must be a date.")
+            return cls._validate_date(cls._clean(value), f"{cage_card_id} {field}")
+
+        return {
+            "cage_card_id": cage_card_id,
+            "status": status,
+            "count": count,
+            "room": optional_text("room", "room", 100),
+            "protocol": optional_text("protocol", "protocol"),
+            "on_census_date": optional_date("on_census_date", "on census date"),
+            "off_census_date": optional_date("off_census_date", "off census date"),
+        }
+
+    @staticmethod
+    def _aops_item_values(item: Mapping[str, Any]) -> tuple[Any, ...]:
+        return (
+            item["reconciliation_id"],
+            item["cage_card_id"],
+            item["kind"],
+            item["official_status"],
+            item["official_count"],
+            item.get("local_cage_id"),
+            item.get("local_status"),
+            item.get("local_count"),
+            item.get("official_room"),
+            item.get("official_protocol"),
+            item.get("official_on_census_date"),
+            item.get("official_off_census_date"),
+            item.get("protected_detail"),
+            item.get("decision", "pending"),
+            item.get("resolution_note"),
+            item.get("decided_at"),
+        )
+
+    @staticmethod
+    def _insert_aops_item(connection: sqlite3.Connection, item: Mapping[str, Any]) -> None:
+        connection.execute(
+            """
+            INSERT INTO aops_reconciliation_items(
+                reconciliation_id, cage_card_id, kind, official_status, official_count,
+                local_cage_id, local_status, local_count, official_room, official_protocol,
+                official_on_census_date, official_off_census_date, protected_detail,
+                decision, resolution_note, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            Database._aops_item_values(item),
+        )
+
+    def create_aops_reconciliation(
+        self,
+        *,
+        source_filename: str,
+        source_sha256: str,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Stage an AOPS comparison without changing any cage or mouse record."""
+
+        filename = self._clean(source_filename)
+        if filename is None or len(filename) > 255:
+            raise ValueError("AOPS source filename must be 1-255 characters.")
+        digest = source_sha256.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("AOPS source SHA-256 must contain 64 hexadecimal characters.")
+        normalized_rows = [self._normalize_aops_row(row) for row in rows]
+        if not normalized_rows:
+            raise ValueError("AOPS reconciliation requires at least one cage row.")
+        normalized_ids = [row["cage_card_id"].casefold() for row in normalized_rows]
+        if len(normalized_ids) != len(set(normalized_ids)):
+            raise ValueError("AOPS cage card IDs must be unique within an upload.")
+
+        with self.transaction() as connection:
+            local_rows = connection.execute(
+                """
+                SELECT c.*,
+                       SUM(CASE WHEN a.status = 'active' THEN 1 ELSE 0 END)
+                           AS active_count,
+                       COUNT(a.id) AS total_count
+                FROM cages c
+                LEFT JOIN animals a ON a.cage_id = c.id
+                GROUP BY c.id
+                """
+            ).fetchall()
+            local_cages = {str(row["cage_card_id"]).casefold(): row for row in local_rows}
+            matched_count = 0
+            protected_count = 0
+            staged_items: list[dict[str, Any]] = []
+
+            for official in normalized_rows:
+                staged_before = len(staged_items)
+                cage_card_id = str(official["cage_card_id"])
+                local = local_cages.get(cage_card_id.casefold())
+                item_base = {
+                    "cage_card_id": cage_card_id,
+                    "official_status": official["status"],
+                    "official_count": official["count"],
+                    "official_room": official["room"],
+                    "official_protocol": official["protocol"],
+                    "official_on_census_date": official["on_census_date"],
+                    "official_off_census_date": official["off_census_date"],
+                }
+                if local is None:
+                    staged_items.append(
+                        {
+                            **item_base,
+                            "kind": "add_cage",
+                            "local_cage_id": None,
+                            "local_status": None,
+                            "local_count": None,
+                        }
+                    )
+                    continue
+
+                local_status = str(local["status"])
+                active_count = int(local["active_count"] or 0)
+                total_count = int(local["total_count"] or 0)
+                comparison_count = (
+                    total_count if local_status in {"inactive", "on_order"} else active_count
+                )
+                local_base = {
+                    **item_base,
+                    "local_cage_id": int(local["id"]),
+                    "local_status": local_status,
+                    "local_count": comparison_count,
+                }
+                official_status = str(official["status"])
+                official_count = int(official["count"])
+
+                if official_status == local_status:
+                    if official_count > comparison_count:
+                        staged_items.append({**local_base, "kind": "add_mice"})
+                    elif official_count < comparison_count:
+                        staged_items.append(
+                            {
+                                **local_base,
+                                "kind": "local_ahead",
+                                "decision": "kept_local",
+                                "protected_detail": json.dumps(
+                                    {
+                                        "reason": "local_count_exceeds_aops",
+                                        "local_count": comparison_count,
+                                        "official_count": official_count,
+                                    },
+                                    sort_keys=True,
+                                ),
+                                "resolution_note": (
+                                    "Local count exceeds AOPS; no mouse was selected for removal."
+                                ),
+                                "decided_at": "CURRENT_TIMESTAMP",
+                            }
+                        )
+                        protected_count += 1
+                elif official_status == "inactive" and local_status in {"active", "on_order"}:
+                    inactive_count_base = {**local_base, "local_count": total_count}
+                    if official_count > total_count:
+                        staged_items.append({**inactive_count_base, "kind": "add_mice"})
+                    elif official_count < total_count:
+                        staged_items.append(
+                            {
+                                **inactive_count_base,
+                                "kind": "local_ahead",
+                                "decision": "kept_local",
+                                "protected_detail": json.dumps(
+                                    {
+                                        "reason": "local_count_exceeds_aops",
+                                        "local_count": total_count,
+                                        "official_count": official_count,
+                                    },
+                                    sort_keys=True,
+                                ),
+                                "resolution_note": (
+                                    "Local count exceeds AOPS; no mouse was selected for removal."
+                                ),
+                                "decided_at": "CURRENT_TIMESTAMP",
+                            }
+                        )
+                        protected_count += 1
+                    staged_items.append(
+                        {
+                            **local_base,
+                            "local_count": active_count,
+                            "kind": "deactivate_cage",
+                        }
+                    )
+                elif official_status == "active" and local_status == "on_order":
+                    if total_count <= official_count:
+                        staged_items.append({**local_base, "kind": "activate_cage"})
+                    else:
+                        staged_items.append(
+                            {
+                                **local_base,
+                                "kind": "status_conflict",
+                                "decision": "kept_local",
+                                "protected_detail": json.dumps(
+                                    {
+                                        "reason": "ordered_count_exceeds_active_aops_count",
+                                        "local_total_count": total_count,
+                                        "official_count": official_count,
+                                    },
+                                    sort_keys=True,
+                                ),
+                                "resolution_note": (
+                                    "On-order mouse count exceeds the active AOPS target."
+                                ),
+                                "decided_at": "CURRENT_TIMESTAMP",
+                            }
+                        )
+                        protected_count += 1
+                else:
+                    staged_items.append(
+                        {
+                            **local_base,
+                            "kind": "status_conflict",
+                            "decision": "kept_local",
+                            "protected_detail": json.dumps(
+                                {
+                                    "reason": "unsupported_status_transition",
+                                    "local_status": local_status,
+                                    "official_status": official_status,
+                                },
+                                sort_keys=True,
+                            ),
+                            "resolution_note": (
+                                "AOPS status conflicts with local history; no status was changed."
+                            ),
+                            "decided_at": "CURRENT_TIMESTAMP",
+                        }
+                    )
+                    protected_count += 1
+                metadata_differences: list[dict[str, str | None]] = []
+                for field, local_column, official_key in (
+                    ("room", "room", "room"),
+                    ("protocol", "protocol", "protocol"),
+                    ("on_census_date", "on_census_date", "on_census_date"),
+                    ("off_census_date", "off_census_date", "off_census_date"),
+                ):
+                    local_value = self._clean(local[local_column])
+                    official_value = official[official_key]
+                    if local_value != official_value:
+                        metadata_differences.append(
+                            {
+                                "field": field,
+                                "local": local_value,
+                                "official": official_value,
+                            }
+                        )
+                if metadata_differences:
+                    staged_items.append(
+                        {
+                            **local_base,
+                            "kind": "metadata_protected",
+                            "decision": "kept_local",
+                            "protected_detail": json.dumps(
+                                {"differences": metadata_differences},
+                                sort_keys=True,
+                            ),
+                            "resolution_note": "Existing local metadata was retained.",
+                            "decided_at": "CURRENT_TIMESTAMP",
+                        }
+                    )
+                    protected_count += 1
+                if len(staged_items) == staged_before:
+                    matched_count += 1
+
+            cursor = connection.execute(
+                """
+                INSERT INTO aops_reconciliations(
+                    source_filename, source_sha256, row_count, matched_count, protected_count
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (filename, digest, len(normalized_rows), matched_count, protected_count),
+            )
+            reconciliation_id = self._lastrowid(cursor)
+            for item in staged_items:
+                item["reconciliation_id"] = reconciliation_id
+                decided_at = item.get("decided_at")
+                if decided_at == "CURRENT_TIMESTAMP":
+                    item["decided_at"] = datetime.now().isoformat(timespec="seconds")
+                self._insert_aops_item(connection, item)
+
+        result = self.get_aops_reconciliation(reconciliation_id)
+        assert result is not None
+        return result
+
+    @staticmethod
+    def _aops_item_record(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["actionable"] = item["kind"] in _AOPS_ACTIONABLE_KINDS
+        item["protected"] = item["kind"] in _AOPS_PROTECTED_KINDS
+        item["cage_id"] = item["local_cage_id"]
+        item["room"] = item["official_room"]
+        local_count = int(item["local_count"] or 0)
+        official_count = int(item["official_count"])
+        item["delta"] = official_count - local_count
+        if item["kind"] == "add_cage":
+            item["delta"] = official_count
+            item["effect"] = (
+                f"Add {item['cage_card_id']} with {official_count} "
+                f"mouse {'record' if official_count == 1 else 'records'}."
+            )
+        elif item["kind"] == "add_mice":
+            added = max(0, item["delta"])
+            if item["official_status"] == "inactive":
+                item["effect"] = (
+                    f"Add {added} inactive historical "
+                    f"{'mouse record' if added == 1 else 'mouse records'} to reach "
+                    f"{official_count}."
+                )
+            else:
+                item["effect"] = (
+                    f"Add {added} {'mouse' if added == 1 else 'mice'} to reach {official_count}."
+                )
+        elif item["kind"] == "activate_cage":
+            added = max(0, item["delta"])
+            item["effect"] = (
+                f"Activate {local_count} ordered {'mouse' if local_count == 1 else 'mice'} "
+                f"and add {added} {'mouse' if added == 1 else 'mice'} to reach "
+                f"{official_count}."
+            )
+        elif item["kind"] == "deactivate_cage":
+            item["effect"] = (
+                f"Deactivate the cage and its {local_count} active "
+                f"{'mouse' if local_count == 1 else 'mice'}."
+            )
+        else:
+            item["effect"] = item.get("resolution_note") or "Keep the local record."
+        protected_detail = item.get("protected_detail")
+        if protected_detail:
+            try:
+                item["protected_details"] = json.loads(protected_detail)
+            except (TypeError, json.JSONDecodeError):
+                item["protected_details"] = {"detail": str(protected_detail)}
+        else:
+            item["protected_details"] = None
+        return item
+
+    def get_latest_aops_reconciliation(self) -> dict[str, Any] | None:
+        """Resume the latest saved CSV review after leaving the upload page."""
+
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT id FROM aops_reconciliations ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return None if row is None else self.get_aops_reconciliation(int(row["id"]))
+
+    def get_aops_reconciliation(self, reconciliation_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            run = self.connection.execute(
+                "SELECT * FROM aops_reconciliations WHERE id = ?",
+                (reconciliation_id,),
+            ).fetchone()
+            if run is None:
+                return None
+            rows = self.connection.execute(
+                """
+                SELECT * FROM aops_reconciliation_items
+                WHERE reconciliation_id = ?
+                ORDER BY cage_card_id COLLATE NOCASE, kind, id
+                """,
+                (reconciliation_id,),
+            ).fetchall()
+            items = [self._aops_item_record(row) for row in rows]
+
+        grouped: dict[str, list[dict[str, Any]]] = {
+            kind: [] for kind in sorted(_AOPS_ACTIONABLE_KINDS | _AOPS_PROTECTED_KINDS)
+        }
+        for item in items:
+            grouped[str(item["kind"])].append(item)
+        decision_counts = {
+            decision: sum(item["decision"] == decision for item in items)
+            for decision in ("pending", "applied", "kept_local")
+        }
+        result = dict(run)
+        result["items"] = items
+        result["grouped"] = grouped
+        result["groups"] = grouped
+        result["grouped_items"] = grouped
+        result["stats"] = {
+            "total_items": len(items),
+            "actionable": sum(bool(item["actionable"]) for item in items),
+            "protected": sum(bool(item["protected"]) for item in items),
+            **decision_counts,
+            "kind_counts": {kind: len(group) for kind, group in grouped.items()},
+        }
+        result["actionable_pending_count"] = sum(
+            item["actionable"] and item["decision"] == "pending" for item in items
+        )
+        result["pending_count"] = decision_counts["pending"]
+        result["applied_count"] = decision_counts["applied"]
+        result["kept_local_count"] = decision_counts["kept_local"]
+        return result
+
+    def get_aops_reconciliation_item(
+        self,
+        reconciliation_id: int,
+        item_id: int,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT * FROM aops_reconciliation_items
+                WHERE reconciliation_id = ? AND id = ?
+                """,
+                (reconciliation_id, item_id),
+            ).fetchone()
+            return None if row is None else self._aops_item_record(row)
+
+    @staticmethod
+    def _aops_item_cage(
+        connection: sqlite3.Connection,
+        item: sqlite3.Row,
+    ) -> sqlite3.Row:
+        local_cage_id = item["local_cage_id"]
+        cage = (
+            connection.execute("SELECT * FROM cages WHERE id = ?", (local_cage_id,)).fetchone()
+            if local_cage_id is not None
+            else None
+        )
+        if cage is None:
+            raise ValueError(f"{item['cage_card_id']} changed after AOPS analysis; analyze again.")
+        if str(cage["cage_card_id"]).casefold() != str(item["cage_card_id"]).casefold():
+            raise ValueError(f"{item['cage_card_id']} changed after AOPS analysis; analyze again.")
+        return cage
+
+    def _apply_aops_colony_action(
+        self,
+        connection: sqlite3.Connection,
+        item: sqlite3.Row,
+    ) -> str:
+        kind = str(item["kind"])
+        official_status = str(item["official_status"])
+        official_count = int(item["official_count"])
+        cage_card_id = str(item["cage_card_id"])
+
+        if kind == "add_cage":
+            duplicate = connection.execute(
+                "SELECT 1 FROM cages WHERE cage_card_id = ? COLLATE NOCASE",
+                (cage_card_id,),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError(f"{cage_card_id} now exists locally; analyze again.")
+            family_letter = self._allocate_letter(connection)
+            cursor = connection.execute(
+                """
+                INSERT INTO cages(
+                    cage_card_id, family_letter, status, room, is_breeding_pair,
+                    protocol, note, source_cage_id, creation_type,
+                    on_census_date, off_census_date
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'aops_reconcile', ?, ?)
+                """,
+                (
+                    cage_card_id,
+                    family_letter,
+                    official_status,
+                    item["official_room"],
+                    int(self._is_breeding_room(item["official_room"])),
+                    item["official_protocol"],
+                    item["official_on_census_date"],
+                    item["official_off_census_date"],
+                ),
+            )
+            cage_id = self._lastrowid(cursor)
+            mouse_status = "active" if official_status == "active" else "inactive"
+            for _ in range(official_count):
+                self._insert_animal(
+                    connection,
+                    cage_id=cage_id,
+                    family_letter=family_letter,
+                    sex="U",
+                    dob=None,
+                    genotype=None,
+                    mouse_user=None,
+                    status=mouse_status,
+                    note=None,
+                    movement_type="aops_reconcile",
+                )
+            return (
+                f"Added AOPS cage {cage_card_id} with {official_count} mouse "
+                f"{'record' if official_count == 1 else 'records'}."
+            )
+
+        cage = self._aops_item_cage(connection, item)
+        cage_id = int(cage["id"])
+
+        if kind == "add_mice":
+            if official_status == "inactive":
+                permitted_statuses = {str(item["local_status"]), "inactive"}
+                if str(cage["status"]) not in permitted_statuses:
+                    raise ValueError(
+                        f"{cage_card_id} status changed after AOPS analysis; analyze again."
+                    )
+                count_sql = "SELECT COUNT(*) FROM animals WHERE cage_id = ?"
+            else:
+                if cage["status"] != official_status or official_status not in {
+                    "active",
+                    "on_order",
+                }:
+                    raise ValueError(
+                        f"{cage_card_id} status changed after AOPS analysis; analyze again."
+                    )
+                count_sql = (
+                    "SELECT COUNT(*) FROM animals WHERE cage_id = ? AND status = 'active'"
+                    if official_status == "active"
+                    else "SELECT COUNT(*) FROM animals WHERE cage_id = ?"
+                )
+            current_count = int(connection.execute(count_sql, (cage_id,)).fetchone()[0])
+            staged_count = int(item["local_count"] or 0)
+            if current_count < staged_count:
+                raise ValueError(
+                    f"{cage_card_id} mouse count fell after AOPS analysis; analyze again."
+                )
+            if current_count > official_count:
+                raise ValueError(f"{cage_card_id} is now ahead of AOPS; analyze again.")
+            added_count = official_count - current_count
+            mouse_status = "active" if official_status == "active" else "inactive"
+            for _ in range(added_count):
+                self._insert_animal(
+                    connection,
+                    cage_id=cage_id,
+                    family_letter=str(cage["family_letter"]),
+                    sex="U",
+                    dob=None,
+                    genotype=None,
+                    mouse_user=None,
+                    status=mouse_status,
+                    note=None,
+                    movement_type="aops_reconcile",
+                )
+            return (
+                f"Added {added_count} {'mouse' if added_count == 1 else 'mice'} "
+                f"to {cage_card_id}; AOPS target is {official_count}."
+            )
+
+        if kind == "activate_cage":
+            if cage["status"] != "on_order":
+                raise ValueError(
+                    f"{cage_card_id} status changed after AOPS analysis; analyze again."
+                )
+            total_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM animals WHERE cage_id = ?",
+                    (cage_id,),
+                ).fetchone()[0]
+            )
+            staged_count = int(item["local_count"] or 0)
+            if total_count < staged_count:
+                raise ValueError(
+                    f"{cage_card_id} mouse count fell after AOPS analysis; analyze again."
+                )
+            if total_count > official_count:
+                raise ValueError(f"{cage_card_id} ordered count now exceeds AOPS; analyze again.")
+            connection.execute(
+                """
+                UPDATE animals
+                SET status = 'active', inactive_by_cage = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE cage_id = ?
+                """,
+                (cage_id,),
+            )
+            added_count = official_count - total_count
+            for _ in range(added_count):
+                self._insert_animal(
+                    connection,
+                    cage_id=cage_id,
+                    family_letter=str(cage["family_letter"]),
+                    sex="U",
+                    dob=None,
+                    genotype=None,
+                    mouse_user=None,
+                    status="active",
+                    note=None,
+                    movement_type="aops_reconcile",
+                )
+            connection.execute(
+                """
+                UPDATE cages
+                SET status = 'active', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (cage_id,),
+            )
+            return (
+                f"Activated {total_count} ordered "
+                f"{'mouse' if total_count == 1 else 'mice'} and added {added_count} "
+                f"{'mouse' if added_count == 1 else 'mice'} to {cage_card_id}."
+            )
+
+        if kind == "deactivate_cage":
+            if cage["status"] == "inactive":
+                return f"{cage_card_id} was already inactive."
+            if (
+                cage["status"] not in {"active", "on_order"}
+                or cage["status"] != item["local_status"]
+            ):
+                raise ValueError(
+                    f"{cage_card_id} status changed after AOPS analysis; analyze again."
+                )
+            current_active_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM animals WHERE cage_id = ? AND status = 'active'",
+                    (cage_id,),
+                ).fetchone()[0]
+            )
+            staged_active_count = int(item["local_count"] or 0)
+            if current_active_count != staged_active_count:
+                raise ValueError(
+                    f"{cage_card_id} active mouse count changed after AOPS analysis; analyze again."
+                )
+            connection.execute(
+                """
+                UPDATE cages
+                SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (cage_id,),
+            )
+            cursor = connection.execute(
+                """
+                UPDATE animals
+                SET status = 'inactive', inactive_by_cage = 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE cage_id = ? AND status = 'active'
+                """,
+                (cage_id,),
+            )
+            deactivated_count = int(cursor.rowcount)
+            return (
+                f"Deactivated {cage_card_id} and {deactivated_count} active "
+                f"{'mouse' if deactivated_count == 1 else 'mice'}."
+            )
+
+        raise ValueError("This AOPS difference is protected and cannot be applied.")
+
+    @staticmethod
+    def _mark_aops_item_applied(
+        connection: sqlite3.Connection,
+        item_id: int,
+        note: str,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE aops_reconciliation_items
+            SET decision = 'applied', resolution_note = ?, decided_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (note, item_id),
+        )
+
+    def apply_aops_reconciliation_item(
+        self,
+        reconciliation_id: int,
+        item_id: int,
+    ) -> dict[str, Any]:
+        """Apply one reviewed action exactly once in the same transaction as its decision."""
+
+        with self.transaction() as connection:
+            item = connection.execute(
+                """
+                SELECT * FROM aops_reconciliation_items
+                WHERE reconciliation_id = ? AND id = ?
+                """,
+                (reconciliation_id, item_id),
+            ).fetchone()
+            if item is None:
+                raise ValueError("AOPS reconciliation item not found.")
+            if item["decision"] != "pending":
+                pass
+            elif item["kind"] not in _AOPS_ACTIONABLE_KINDS:
+                raise ValueError("This AOPS difference is protected and cannot be applied.")
+            else:
+                note = self._apply_aops_colony_action(connection, item)
+                self._mark_aops_item_applied(connection, int(item["id"]), note)
+        result = self.get_aops_reconciliation_item(reconciliation_id, item_id)
+        assert result is not None
+        return result
+
+    def apply_all_aops_reconciliation(self, reconciliation_id: int) -> dict[str, Any]:
+        """Atomically apply every pending actionable item in one reviewed run."""
+
+        with self.transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM aops_reconciliations WHERE id = ?",
+                (reconciliation_id,),
+            ).fetchone()
+            if exists is None:
+                raise ValueError("AOPS reconciliation not found.")
+            items = connection.execute(
+                """
+                SELECT * FROM aops_reconciliation_items
+                WHERE reconciliation_id = ? AND decision = 'pending'
+                ORDER BY id
+                """,
+                (reconciliation_id,),
+            ).fetchall()
+            for item in items:
+                if item["kind"] not in _AOPS_ACTIONABLE_KINDS:
+                    continue
+                note = self._apply_aops_colony_action(connection, item)
+                self._mark_aops_item_applied(connection, int(item["id"]), note)
+        result = self.get_aops_reconciliation(reconciliation_id)
+        assert result is not None
+        return result
+
+    def keep_local_aops_reconciliation_item(
+        self,
+        reconciliation_id: int,
+        item_id: int,
+    ) -> dict[str, Any]:
+        """Finalize a reviewed difference without changing colony records."""
+
+        with self.transaction() as connection:
+            item = connection.execute(
+                """
+                SELECT * FROM aops_reconciliation_items
+                WHERE reconciliation_id = ? AND id = ?
+                """,
+                (reconciliation_id, item_id),
+            ).fetchone()
+            if item is None:
+                raise ValueError("AOPS reconciliation item not found.")
+            if item["decision"] == "pending":
+                connection.execute(
+                    """
+                    UPDATE aops_reconciliation_items
+                    SET decision = 'kept_local',
+                        resolution_note = 'Kept the local colony record.',
+                        decided_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (item_id,),
+                )
+        result = self.get_aops_reconciliation_item(reconciliation_id, item_id)
+        assert result is not None
+        return result
+
+    def keep_local_all_aops_reconciliation(self, reconciliation_id: int) -> dict[str, Any]:
+        """Keep local data for every still-pending difference in one transaction."""
+
+        with self.transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM aops_reconciliations WHERE id = ?",
+                (reconciliation_id,),
+            ).fetchone()
+            if exists is None:
+                raise ValueError("AOPS reconciliation not found.")
+            connection.execute(
+                """
+                UPDATE aops_reconciliation_items
+                SET decision = 'kept_local',
+                    resolution_note = 'Kept the local colony record.',
+                    decided_at = CURRENT_TIMESTAMP
+                WHERE reconciliation_id = ? AND decision = 'pending'
+                """,
+                (reconciliation_id,),
+            )
+        result = self.get_aops_reconciliation(reconciliation_id)
         assert result is not None
         return result
 
@@ -1361,6 +2261,192 @@ class Database:
             ]
 
     @staticmethod
+    def _migrate_variable_catalog(connection: sqlite3.Connection) -> None:
+        # Preserve the seeded state even when every former option was disabled.
+        connection.execute(
+            "INSERT OR IGNORE INTO variable_catalog_state(id) "
+            "SELECT 1 WHERE EXISTS (SELECT 1 FROM variable_options)"
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO room_settings(name, room_alias, is_breeding_room) "
+            "SELECT name, room_alias, is_breeding_room FROM variable_options "
+            "WHERE category = 'room'"
+        )
+        connection.execute("DELETE FROM variable_options WHERE enabled = 0")
+
+    def _load_variable_room_settings(self, connection: sqlite3.Connection) -> None:
+        self._variable_room_settings = {
+            row["name"].casefold(): (row["room_alias"], bool(row["is_breeding_room"]))
+            for row in connection.execute(
+                "SELECT name, room_alias, is_breeding_room FROM room_settings"
+            ).fetchall()
+        }
+
+    def initialize_variable_options(self) -> None:
+        """Seed the editable catalog once, after any initial colony import."""
+
+        if self._variable_options_initialized:
+            return
+        with self.transaction() as connection:
+            if connection.execute("SELECT 1 FROM variable_catalog_state WHERE id = 1").fetchone():
+                self._variable_options_initialized = True
+                return
+            sources = {
+                "genotype": ("animals", "genotype"),
+                "mouse_user": ("animals", "mouse_user"),
+                "surgery_type": ("surgery_types", "name"),
+                "operator": ("operators", "name"),
+                "room": ("cages", "room"),
+            }
+            for category, (table, column) in sources.items():
+                names: dict[str, str] = {}
+                for row in connection.execute(
+                    f"SELECT {column} AS name FROM {table} "
+                    f"WHERE {column} IS NOT NULL AND {column} != '' ORDER BY {column}"
+                ).fetchall():
+                    name = row["name"].strip()
+                    if name:
+                        key = name if category == "genotype" else name.casefold()
+                        names.setdefault(key, name)
+                if category == "room":
+                    for name in self._room_aliases:
+                        names.setdefault(name.casefold(), name)
+                for name in names.values():
+                    connection.execute(
+                        "INSERT INTO variable_options(category, name) VALUES (?, ?)",
+                        (category, name),
+                    )
+                    if category == "room":
+                        connection.execute(
+                            "INSERT INTO room_settings(name, room_alias, is_breeding_room) "
+                            "VALUES (?, ?, ?)",
+                            (name, self._room_alias(name), int(self._is_breeding_room(name))),
+                        )
+            connection.execute("INSERT INTO variable_catalog_state(id) VALUES (1)")
+            self._load_variable_room_settings(connection)
+        self._variable_options_initialized = True
+
+    @staticmethod
+    def _validate_variable_category(category: str) -> None:
+        if category not in _VARIABLE_CATEGORIES:
+            raise ValueError("Unknown variable category.")
+
+    @classmethod
+    def _variable_name(cls, name: str) -> str:
+        cleaned = cls._validate_optional_text(name, "Name", 100)
+        if cleaned is None:
+            raise ValueError("Name is required.")
+        return cleaned
+
+    def list_variable_options(self, category: str) -> list[dict[str, Any]]:
+        self._validate_variable_category(category)
+        self.initialize_variable_options()
+        with self._lock:
+            return [
+                dict(row)
+                for row in self.connection.execute(
+                    "SELECT id, category, name FROM variable_options "
+                    "WHERE category = ? ORDER BY name COLLATE NOCASE, name",
+                    (category,),
+                ).fetchall()
+            ]
+
+    @staticmethod
+    def _check_variable_name_available(
+        connection: sqlite3.Connection,
+        category: str,
+        name: str,
+        option_id: int = -1,
+    ) -> None:
+        name_match = "name = ?" if category == "genotype" else "LOWER(name) = LOWER(?)"
+        if connection.execute(
+            "SELECT 1 FROM variable_options "
+            f"WHERE category = ? AND {name_match} AND id != ?",
+            (category, name, option_id),
+        ).fetchone():
+            raise ValueError("This name already exists in this category.")
+
+    def add_variable_option(self, category: str, name: str) -> int:
+        self._validate_variable_category(category)
+        cleaned_name = self._variable_name(name)
+        self.initialize_variable_options()
+        with self.transaction() as connection:
+            self._check_variable_name_available(connection, category, cleaned_name)
+            cursor = connection.execute(
+                "INSERT INTO variable_options(category, name) VALUES (?, ?)",
+                (category, cleaned_name),
+            )
+            option_id = self._lastrowid(cursor)
+            if category in {"operator", "surgery_type"}:
+                table = "operators" if category == "operator" else "surgery_types"
+                self._lookup_id(connection, table, cleaned_name)
+            if category == "room":
+                connection.execute(
+                    "INSERT OR IGNORE INTO room_settings(name) VALUES (?)", (cleaned_name,)
+                )
+                self._load_variable_room_settings(connection)
+            return option_id
+
+    def rename_variable_option(self, option_id: int, name: str) -> None:
+        cleaned_name = self._variable_name(name)
+        self.initialize_variable_options()
+        with self.transaction() as connection:
+            option = connection.execute(
+                "SELECT category, name FROM variable_options WHERE id = ?", (option_id,)
+            ).fetchone()
+            if option is None:
+                raise ValueError("Variable option not found.")
+            category, old_name = option["category"], option["name"]
+            if cleaned_name == old_name:
+                return
+            self._check_variable_name_available(connection, category, cleaned_name, option_id)
+            if category in {"operator", "surgery_type"}:
+                table = "operators" if category == "operator" else "surgery_types"
+                existing = connection.execute(
+                    f"SELECT name FROM {table} WHERE name = ? COLLATE NOCASE", (cleaned_name,)
+                ).fetchone()
+                if existing is not None and existing["name"].casefold() != old_name.casefold():
+                    raise ValueError("This name is already used by an existing surgery record.")
+                # Keep lookup IDs unchanged so existing surgery references remain intact.
+                connection.execute(
+                    f"UPDATE {table} SET name = ? WHERE name = ? COLLATE NOCASE",
+                    (cleaned_name, old_name),
+                )
+            elif category in {"genotype", "mouse_user"}:
+                collation = "" if category == "genotype" else " COLLATE NOCASE"
+                connection.execute(
+                    f"UPDATE animals SET {category} = ?, updated_at = CURRENT_TIMESTAMP "
+                    f"WHERE {category} = ?{collation}",
+                    (cleaned_name, old_name),
+                )
+            else:
+                if cleaned_name.casefold() != old_name.casefold() and connection.execute(
+                    "SELECT 1 FROM room_settings WHERE name = ? COLLATE NOCASE", (cleaned_name,)
+                ).fetchone():
+                    raise ValueError("This room name already has saved settings.")
+                connection.execute(
+                    "UPDATE room_settings SET name = ? WHERE name = ? COLLATE NOCASE",
+                    (cleaned_name, old_name),
+                )
+                connection.execute(
+                    "UPDATE cages SET room = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE room = ? COLLATE NOCASE",
+                    (cleaned_name, old_name),
+                )
+            connection.execute(
+                "UPDATE variable_options SET name = ? WHERE id = ?", (cleaned_name, option_id)
+            )
+            if category == "room":
+                self._load_variable_room_settings(connection)
+
+    def delete_variable_option(self, option_id: int) -> None:
+        self.initialize_variable_options()
+        with self.transaction() as connection:
+            cursor = connection.execute("DELETE FROM variable_options WHERE id = ?", (option_id,))
+            if not cursor.rowcount:
+                raise ValueError("Variable option not found.")
+
+    @staticmethod
     def _age_display(dob: str | None) -> str:
         if not dob:
             return "Unknown"
@@ -1407,6 +2493,52 @@ class Database:
             result["age_display"] = self._age_display(result.get("dob"))
             result["surgeries"] = self._surgeries(animal_id)
             return result
+
+    def resolve_animal_identifier(
+        self,
+        identifier: str,
+    ) -> tuple[dict[str, Any], str] | None:
+        """Resolve one exact public or legacy mouse ID without exposing database IDs."""
+
+        if identifier != identifier.strip() or not identifier or len(identifier) > 100:
+            raise ValueError("Mouse identifier must be 1-100 characters with no outer whitespace.")
+        with self._lock:
+            public_row = self.connection.execute(
+                """
+                SELECT a.*, c.cage_card_id, c.status AS cage_status,
+                       c.room AS cage_room, c.protocol AS cage_protocol
+                FROM animals a
+                JOIN cages c ON c.id = a.cage_id
+                WHERE a.public_id = ?
+                """,
+                (identifier,),
+            ).fetchone()
+            if public_row is not None:
+                result = dict(public_row)
+                result["surgeries"] = self._surgeries(int(result["id"]))
+                return result, "public_id"
+
+            legacy_rows = self.connection.execute(
+                """
+                SELECT a.*, c.cage_card_id, c.status AS cage_status,
+                       c.room AS cage_room, c.protocol AS cage_protocol
+                FROM animals a
+                JOIN cages c ON c.id = a.cage_id
+                WHERE a.legacy_id = ?
+                ORDER BY a.id
+                LIMIT 2
+                """,
+                (identifier,),
+            ).fetchall()
+            if len(legacy_rows) > 1:
+                raise AmbiguousAnimalIdentifierError(
+                    "Legacy mouse identifier is not unique; use the generated public ID."
+                )
+            if not legacy_rows:
+                return None
+            result = dict(legacy_rows[0])
+            result["surgeries"] = self._surgeries(int(result["id"]))
+            return result, "legacy_id"
 
     def list_animals(
         self,

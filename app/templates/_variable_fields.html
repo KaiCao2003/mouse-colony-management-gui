@@ -1,0 +1,7 @@
+{% macro variable_select(name, options, current='', empty_label='Not set', required=false) -%}
+<select name="{{ name }}"{% if required %} required{% endif %}>
+  <option value=""{% if not current %} selected{% endif %}{% if required %} disabled{% endif %}>{{ empty_label }}</option>
+  {% if current and current not in options %}<option value="{{ current }}" selected>{{ current }}</option>{% endif %}
+  {% for option in options %}<option value="{{ option }}"{% if option == current %} selected{% endif %}>{{ option }}</option>{% endfor %}
+</select>
+{%- endmacro %}

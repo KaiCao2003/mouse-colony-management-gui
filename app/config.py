@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 LOCAL_BIND_HOST: Final[str] = "127.0.0.1"
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 LOGIN_ANSWER_PLACEHOLDER: Final[str] = "replace-with-private-answer"
+INTEGRATION_TOKEN_PLACEHOLDER: Final[str] = "replace-with-random-integration-token"
 
 
 class Settings(BaseSettings):
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
     room_aliases_json: str = "{}"
     breeding_rooms: str = ""
     login_answer: SecretStr
+    integration_token: SecretStr | None = None
 
     @field_validator("login_answer")
     @classmethod
@@ -46,6 +48,22 @@ class Settings(BaseSettings):
         if not candidate or candidate == LOGIN_ANSWER_PLACEHOLDER:
             raise ValueError("MOUSELINE_LOGIN_ANSWER must be set to a private value")
         return value
+
+    @field_validator("integration_token")
+    @classmethod
+    def validate_integration_token(cls, value: SecretStr | None) -> SecretStr | None:
+        """Require a distinct high-entropy token whenever the integration API is enabled."""
+
+        if value is None:
+            return None
+        candidate = value.get_secret_value().strip()
+        if (
+            len(candidate) < 32
+            or len(candidate) > 512
+            or candidate == INTEGRATION_TOKEN_PLACEHOLDER
+        ):
+            raise ValueError("MOUSELINE_INTEGRATION_TOKEN must be a private 32-512 character value")
+        return SecretStr(candidate)
 
     @field_validator("root_path")
     @classmethod

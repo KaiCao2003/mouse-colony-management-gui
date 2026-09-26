@@ -9,7 +9,15 @@
   const selectionCount = document.querySelector("[data-selection-count]");
   const workspacePanels = [...document.querySelectorAll("[data-workspace-panel]")];
   const workspaceTabLinks = [...document.querySelectorAll("[data-workspace-tab-link]")];
+  const aopsResultsHeading = document.querySelector("#aops-results-title");
+  const serverErrorNotice = document.querySelector(".notice--error");
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const animalEditForms = [...document.querySelectorAll(".edit-animal-form")];
+  const saveAllMiceButton = document.querySelector("[data-save-all-mice]");
+  const mouseSaveSummary = document.querySelector("[data-mouse-save-summary]");
+  const savedAnimalValues = new Map();
+  let savingAllMice = false;
+  let activeAnimalSaves = 0;
 
   function workspaceTabFromHash() {
     const requestedTab = window.location.hash.slice(1);
@@ -21,6 +29,42 @@
   function isWorkspaceTabHash() {
     const requestedTab = window.location.hash.slice(1);
     return workspacePanels.some((panel) => panel.dataset.workspacePanel === requestedTab);
+  }
+
+  function focusAopsResults() {
+    if (
+      serverErrorNotice instanceof HTMLElement ||
+      !(aopsResultsHeading instanceof HTMLElement) ||
+      window.location.hash !== "#aops-review"
+    ) {
+      return;
+    }
+    const hasReconciliationQuery = [...new URLSearchParams(window.location.search).keys()].some(
+      (key) => /aops|reconcil|run_id/i.test(key),
+    );
+    if (!hasReconciliationQuery) return;
+
+    window.requestAnimationFrame(() => {
+      aopsResultsHeading.focus({ preventScroll: true });
+      aopsResultsHeading.scrollIntoView({
+        behavior: reducedMotion.matches ? "auto" : "smooth",
+        block: "start",
+      });
+    });
+  }
+
+  function focusAopsError() {
+    if (!(serverErrorNotice instanceof HTMLElement) || window.location.hash !== "#aops-review") {
+      return;
+    }
+    serverErrorNotice.tabIndex = -1;
+    window.requestAnimationFrame(() => {
+      serverErrorNotice.focus({ preventScroll: true });
+      serverErrorNotice.scrollIntoView({
+        behavior: reducedMotion.matches ? "auto" : "smooth",
+        block: "start",
+      });
+    });
   }
 
   function activateWorkspaceTab(tabName, scrollToPanel = false) {
@@ -62,9 +106,13 @@
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#cages`);
     }
     activateWorkspaceTab(workspaceTabFromHash(), hadHash && isWorkspaceTabHash());
+    focusAopsError();
+    focusAopsResults();
 
     window.addEventListener("hashchange", () => {
       activateWorkspaceTab(workspaceTabFromHash(), isWorkspaceTabHash());
+      focusAopsError();
+      focusAopsResults();
     });
 
     for (const [index, link] of workspaceTabLinks.entries()) {
@@ -173,6 +221,28 @@
     }
   }
 
+  async function postForm(form, formData) {
+    const token = csrfToken();
+    if (!token) {
+      throw new Error("This page is missing its local security token. Reload the page and try again.");
+    }
+    const response = await fetch(form.action, {
+      method: "POST",
+      body: formData,
+      headers: {
+        Accept: "text/html,application/json",
+        "X-CSRF-Token": token,
+      },
+      credentials: "same-origin",
+      redirect: "follow",
+      cache: "no-store",
+    });
+    const refreshedToken = response.headers.get("X-CSRF-Token");
+    if (csrfMeta && refreshedToken) csrfMeta.setAttribute("content", refreshedToken);
+    if (!response.ok) throw new Error(await responseError(response));
+    return response;
+  }
+
   function pendingState(form, active, submitter = null) {
     const controls = [...form.querySelectorAll("button, input, select, textarea")];
     for (const control of controls) {
@@ -214,6 +284,114 @@
     }
   });
 
+  function animalFormValues(form) {
+    return new URLSearchParams(new FormData(form)).toString();
+  }
+
+  function dirtyAnimalForms() {
+    return animalEditForms.filter(
+      (form) => form.dataset.submitting !== "true" && animalFormValues(form) !== savedAnimalValues.get(form),
+    );
+  }
+
+  function updateAnimalSaveControls() {
+    const count = dirtyAnimalForms().length;
+    if (saveAllMiceButton) {
+      saveAllMiceButton.disabled = savingAllMice || activeAnimalSaves > 0 || count === 0;
+    }
+    if (mouseSaveSummary) {
+      mouseSaveSummary.textContent = savingAllMice || activeAnimalSaves > 0
+        ? "Saving mice…"
+        : count ? `${count} ${count === 1 ? "mouse has" : "mice have"} unsaved changes` : "";
+    }
+  }
+
+  async function saveAnimalForm(form, submitter) {
+    const formData = new FormData(form);
+    const status = form.querySelector("[data-mouse-save-status]");
+    form.dataset.submitting = "true";
+    pendingState(form, true, submitter);
+    activeAnimalSaves += 1;
+    updateAnimalSaveControls();
+    let saved = false;
+    try {
+      const response = await postForm(form, formData);
+      const target = new URL(response.url || window.location.href, window.location.href);
+      if (target.origin !== window.location.origin || target.pathname !== window.location.pathname) {
+        throw new Error("The save could not be confirmed. Your edits are still here; check your session before retrying.");
+      }
+      // Validation failures also redirect to a 200 HTML page, so check the result before marking a draft saved.
+      if (target.searchParams.get("kind") === "error") {
+        throw new Error(target.searchParams.get("message") || "Could not save this mouse.");
+      }
+      const savedPage = new DOMParser().parseFromString(await response.text(), "text/html");
+      const savedForm = savedPage.getElementById(form.id);
+      if (!(savedForm instanceof HTMLFormElement)) {
+        throw new Error("The save could not be confirmed. Your edits are still here; try again.");
+      }
+      for (const control of form.querySelectorAll("input, select, textarea")) {
+        control.value = savedForm.elements.namedItem(control.name).value;
+      }
+      const age = form.closest(".animal-card").querySelector("[data-birth-date]");
+      if (age) {
+        age.dataset.birthDate = form.elements.namedItem("dob").value;
+        age.textContent = ageFromBirthDate(age.dataset.birthDate);
+      }
+      saved = true;
+      if (status) status.textContent = "Saved";
+    } catch (error) {
+      if (status) status.textContent = "Not saved — your edits are still here";
+      throw error;
+    } finally {
+      delete form.dataset.submitting;
+      pendingState(form, false, submitter);
+      activeAnimalSaves -= 1;
+      if (saved) savedAnimalValues.set(form, animalFormValues(form));
+      updateAnimalSaveControls();
+    }
+  }
+
+  for (const form of animalEditForms) {
+    savedAnimalValues.set(form, animalFormValues(form));
+    const updateDraft = () => {
+      const status = form.querySelector("[data-mouse-save-status]");
+      if (status) {
+        status.textContent = animalFormValues(form) !== savedAnimalValues.get(form) ? "Unsaved changes" : "";
+      }
+      updateAnimalSaveControls();
+    };
+    form.addEventListener("input", updateDraft);
+    form.addEventListener("change", updateDraft);
+  }
+  const mouseSaveActions = document.querySelector("[data-mouse-save-actions]");
+  if (mouseSaveActions) mouseSaveActions.hidden = false;
+  updateAnimalSaveControls();
+
+  saveAllMiceButton?.addEventListener("click", async () => {
+    if (savingAllMice || activeAnimalSaves > 0) return;
+    const forms = dirtyAnimalForms();
+    if (forms.some((form) => !form.reportValidity())) return;
+    savingAllMice = true;
+    clientNotice && (clientNotice.hidden = true);
+    updateAnimalSaveControls();
+    const failures = [];
+    for (const form of forms) {
+      try {
+        await saveAnimalForm(form, form.querySelector('button[type="submit"]'));
+      } catch (error) {
+        const mouseId = form.closest(".animal-card").querySelector(".animal-identity strong").textContent;
+        failures.push(`${mouseId}: ${error instanceof Error ? error.message : "Could not save."}`);
+      }
+    }
+    savingAllMice = false;
+    updateAnimalSaveControls();
+    if (failures.length) {
+      showError(`Saved ${forms.length - failures.length} of ${forms.length} mice. ${failures.join(" ")}`);
+    } else if (mouseSaveSummary && dirtyAnimalForms().length === 0) {
+      mouseSaveSummary.textContent = `Saved ${forms.length} ${forms.length === 1 ? "mouse" : "mice"}.`;
+    }
+  });
+
   if (batchEditForm instanceof HTMLFormElement) {
     for (const property of batchEditForm.querySelectorAll("[data-batch-property]")) {
       const toggle = property.querySelector('input[type="checkbox"]');
@@ -235,6 +413,17 @@
     event.preventDefault();
     if (form.dataset.submitting === "true") return;
 
+    if (form.matches(".edit-animal-form")) {
+      if (savingAllMice) return;
+      clientNotice && (clientNotice.hidden = true);
+      try {
+        await saveAnimalForm(form, event.submitter);
+      } catch (error) {
+        showError(error instanceof Error ? error.message : "Could not save this mouse.");
+      }
+      return;
+    }
+
     if (
       form.matches("[data-batch-edit-form]") &&
       !form.querySelector('input[type="checkbox"]:checked')
@@ -248,12 +437,6 @@
     if (confirmation && !window.confirm(confirmation)) return;
     const returnHash = form.dataset.returnHash || "";
 
-    const token = csrfToken();
-    if (!token) {
-      showError("This page is missing its local security token. Reload the page and try again.");
-      return;
-    }
-
     const formData = new FormData(form);
     if (form.id === "split-form" && formData.getAll("animal_ids").length === 0) {
       showError("Select at least one active mouse before creating the split cage.");
@@ -265,22 +448,7 @@
     pendingState(form, true, submitter);
 
     try {
-      const response = await fetch(form.action, {
-        method: "POST",
-        body: formData,
-        headers: {
-          Accept: "text/html,application/json",
-          "X-CSRF-Token": token,
-        },
-        credentials: "same-origin",
-        redirect: "follow",
-        cache: "no-store",
-      });
-
-      const refreshedToken = response.headers.get("X-CSRF-Token");
-      if (csrfMeta && refreshedToken) csrfMeta.setAttribute("content", refreshedToken);
-
-      if (!response.ok) throw new Error(await responseError(response));
+      const response = await postForm(form, formData);
 
       const target = new URL(response.url || window.location.href, window.location.href);
       if (target.origin !== window.location.origin) {

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="referrer" content="same-origin">
+    <meta name="csrf-token" content="{{ csrf_token | e }}">
+    <title>Variables · Mouse Line</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+    <script src="{{ url_for('static', path='app.js') }}" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to variables</a>
+    <header class="site-header">
+      <div class="shell site-header__inner">
+        <a class="brand" href="{{ base_path }}/#cages" aria-label="Mouse Line home"><strong>Mouse Line</strong></a>
+        <div class="site-header__actions">
+          <nav class="primary-nav" aria-label="Main navigation">
+            <a class="primary-nav__link" href="{{ base_path }}/#cages">Cages</a>
+            <a class="primary-nav__link" href="{{ base_path }}/#new-cage">Create cage</a>
+            <a class="primary-nav__link" href="{{ base_path }}/#aops-review">Update from CSV</a>
+            <a class="primary-nav__link is-active" href="{{ base_path }}/variables" aria-current="page">Variables</a>
+          </nav>
+          {% if show_local_logout %}<form class="session-form" method="post" action="{{ base_path }}/logout"><button class="session-link" type="submit" data-pending-label="Signing out…">Log out</button></form>{% endif %}
+        </div>
+      </div>
+    </header>
+
+    <main id="main-content" class="shell page-stack" tabindex="-1">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <h1 id="page-title">Variables</h1>
+        </div>
+      </section>
+      {% if message %}<div class="notice notice--{{ message_kind or 'success' }}" role="status">{{ message }}</div>{% endif %}
+      <div class="client-notice" data-client-notice role="alert" hidden></div>
+
+      <div class="variables-grid">
+        {% for group in variable_groups %}
+          <section id="variable-{{ group.key }}" class="panel variable-group" aria-labelledby="variable-title-{{ group.key }}">
+            <div class="section-heading"><div><h2 id="variable-title-{{ group.key }}">{{ group.label }}</h2><p>{{ group['items'] | length }} option{% if group['items'] | length != 1 %}s{% endif %}</p></div></div>
+            {% if group['items'] %}
+              <ul class="variable-options">
+                {% for option in group['items'] %}
+                  <li class="variable-option">
+                    <form class="variable-option__rename" method="post" action="{{ base_path }}/variables/{{ option.id }}/rename" data-return-hash="#variable-{{ group.key }}">
+                      <label class="field field--grow"><span class="sr-only">Rename {{ option.name }}</span><input type="text" name="name" value="{{ option.name }}" maxlength="100" autocomplete="off" required></label>
+                      <button class="button button--small" type="submit" data-pending-label="Saving…">Save</button>
+                    </form>
+                    <form method="post" action="{{ base_path }}/variables/{{ option.id }}/delete" data-return-hash="#variable-{{ group.key }}">
+                      <button class="button button--small button--danger-quiet" type="submit" aria-label="Delete {{ option.name }}" data-pending-label="Deleting…">Delete</button>
+                    </form>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}<p class="variable-empty">No options yet.</p>{% endif %}
+            <form class="variable-add" method="post" action="{{ base_path }}/variables/{{ group.key }}/add" data-return-hash="#variable-{{ group.key }}">
+              <label class="field field--grow"><span>New option</span><input type="text" name="name" maxlength="100" autocomplete="off" required></label>
+              <button class="button button--primary button--small" type="submit" data-pending-label="Adding…">Add</button>
+            </form>
+          </section>
+        {% endfor %}
+      </div>
+    </main>
+  </body>
+</html>

@@ -15,6 +15,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.config import LOCAL_BIND_HOST, Settings, get_settings
 from app.database import Database
 from app.importer import ImportReport, seed_if_empty
+from app.integration_api import router as integration_router
+from app.photo_import import router as photo_router
 from app.routes import router
 from app.security import add_security_middleware
 
@@ -45,6 +47,7 @@ def create_app(
             csv_path=resolved_settings.seed_csv_path,
             xlsx_path=resolved_settings.seed_xlsx_path,
         )
+    resolved_database.initialize_variable_options()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -78,6 +81,8 @@ def create_app(
         login_answer=resolved_settings.login_answer.get_secret_value(),
     )
     app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
+    app.include_router(integration_router)
+    app.include_router(photo_router)
     app.include_router(router)
     return app
 

@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 
-from fastapi import APIRouter, Form, HTTPException, Request, Response
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.database import Database
+from app.reconciliation import (
+    MAX_AOPS_CSV_BYTES,
+    AopsCsvValidationError,
+    parse_aops_cage_cards,
+)
 from app.security import (
     LOGIN_COOKIE_NAME,
     LOGIN_SESSION_MAX_AGE_SECONDS,
@@ -24,6 +30,13 @@ _BATCH_ANIMAL_FIELD_LABELS = {
     "genotype": "genotype",
     "dob": "date of birth",
     "mouse_user": "mouse user",
+}
+_VARIABLE_GROUP_LABELS = {
+    "genotype": "Genotypes",
+    "mouse_user": "Mouse users",
+    "surgery_type": "Surgery types",
+    "operator": "Surgery operators",
+    "room": "Rooms",
 }
 _CAGE_FILTER_STATUSES = {"all", "active", "inactive", "on_order"}
 _CAGE_SORT_FIELDS = {"cage_card_id", "room", "status"}
@@ -43,6 +56,15 @@ _CAGE_RETURN_QUERY_KEYS = {
 
 def _db(request: Request) -> Database:
     return request.app.state.database
+
+
+def _variable_form_options(database: Database) -> dict[str, list[str]]:
+    return {
+        f"{category}_options": [
+            option["name"] for option in database.list_variable_options(category)
+        ]
+        for category in _VARIABLE_GROUP_LABELS
+    }
 
 
 def _login_manager(request: Request) -> LoginManager:
@@ -177,6 +199,17 @@ def _sex(value: str) -> str:
 def _canonical_choice(value: str, choices: set[str], default: str) -> str:
     candidate = value.strip().casefold()
     return candidate if candidate in choices else default
+
+
+def _aops_review_path(reconciliation_id: int | None = None) -> str:
+    query = f"?{urlencode({'reconciliation': reconciliation_id})}" if reconciliation_id else ""
+    return f"/{query}#aops-review"
+
+
+def _safe_upload_filename(value: str | None) -> str:
+    candidate = (value or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    printable = "".join(character for character in candidate if character.isprintable())
+    return printable[:255] or "AOPS Cage Cards.csv"
 
 
 def _cage_list_url(
@@ -351,10 +384,18 @@ def index(
     sort: str = "status",
     direction: str = "asc",
     view: Literal["all", "stock", "using", "single", "breeding"] = "all",
+    reconciliation: int | None = None,
     message: str = "",
     kind: str = "success",
 ) -> HTMLResponse:
     database = _db(request)
+    aops_reconciliation = None
+    if reconciliation is not None:
+        aops_reconciliation = database.get_aops_reconciliation(reconciliation)
+        if aops_reconciliation is None:
+            raise HTTPException(status_code=404, detail="AOPS review not found.")
+    elif kind != "error":
+        aops_reconciliation = database.get_latest_aops_reconciliation()
     canonical_view = "using" if view == "single" else view
     canonical_status = _canonical_choice(status, _CAGE_FILTER_STATUSES, "active")
     sort_candidate = sort.strip().casefold()
@@ -410,7 +451,7 @@ def index(
             "all_tags": database.list_tags(),
             "mouse_users": database.list_mouse_users(),
             "rooms": database.list_rooms(),
-            "room_options": database.list_room_options(),
+            **_variable_form_options(database),
             "filters": {
                 "search": search,
                 "status": canonical_status,
@@ -434,6 +475,7 @@ def index(
             "message": message,
             "message_kind": kind,
             "seed_report": request.app.state.seed_report,
+            "aops_reconciliation": aops_reconciliation,
         },
     )
 
@@ -462,11 +504,9 @@ def cage_detail(
             "csrf_token": csrf_token_for_request(request),
             "cage": cage,
             "animals": database.list_animals(cage_id, include_inactive=True),
-            "room_options": database.list_room_options(),
+            **_variable_form_options(database),
             "all_tags": database.list_tags(),
             "mouse_users": database.list_mouse_users(),
-            "operators": database.list_operators(),
-            "surgery_types": database.list_surgery_types(),
             "today": today.isoformat(),
             "default_wean_dob": (today - timedelta(days=21)).isoformat(),
             "message": message,
@@ -475,9 +515,215 @@ def cage_detail(
     )
 
 
+@router.get("/variables", response_class=HTMLResponse)
+def variables_page(
+    request: Request,
+    message: str = "",
+    kind: str = "success",
+) -> HTMLResponse:
+    database = _db(request)
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="variables.html",
+        context={
+            "base_path": _base_path(request),
+            "csrf_token": csrf_token_for_request(request),
+            "variable_groups": [
+                {
+                    "key": category,
+                    "label": label,
+                    "items": database.list_variable_options(category),
+                }
+                for category, label in _VARIABLE_GROUP_LABELS.items()
+            ],
+            "message": message,
+            "message_kind": kind,
+            "show_local_logout": True,
+        },
+    )
+
+
+@router.post("/variables/{category}/add")
+def add_variable_option(
+    category: str,
+    request: Request,
+    name: Annotated[str, Form()],
+) -> RedirectResponse:
+    try:
+        _db(request).add_variable_option(category, name)
+    except ValueError as exc:
+        return _redirect(request, "/variables", str(exc), kind="error")
+    return _redirect(request, "/variables", "Added.")
+
+
+@router.post("/variables/{option_id}/rename")
+def rename_variable_option(
+    option_id: int,
+    request: Request,
+    name: Annotated[str, Form()],
+) -> RedirectResponse:
+    try:
+        _db(request).rename_variable_option(option_id, name)
+    except ValueError as exc:
+        return _redirect(request, "/variables", str(exc), kind="error")
+    return _redirect(request, "/variables", "Saved.")
+
+
+@router.post("/variables/{option_id}/delete")
+def delete_variable_option(
+    option_id: int,
+    request: Request,
+) -> RedirectResponse:
+    try:
+        _db(request).delete_variable_option(option_id)
+    except ValueError as exc:
+        return _redirect(request, "/variables", str(exc), kind="error")
+    return _redirect(request, "/variables", "Deleted.")
+
+
 @router.get("/healthz")
 def healthz(request: Request) -> dict[str, Any]:
     return {"status": "ok", **_db(request).summary()}
+
+
+@router.post("/aops-reconcile/analyze")
+async def analyze_aops_reconciliation(
+    request: Request,
+    csv_file: Annotated[UploadFile, File()],
+) -> RedirectResponse:
+    try:
+        payload = await csv_file.read(MAX_AOPS_CSV_BYTES + 1)
+        parsed = parse_aops_cage_cards(payload)
+        rows = [
+            {
+                "cage_card_id": record.cage_card_id,
+                "status": record.status,
+                "count": record.animal_count,
+                "room": record.room,
+                "protocol": record.protocol,
+                "on_census_date": record.on_census_date,
+                "off_census_date": record.off_census_date,
+            }
+            for record in parsed.records
+        ]
+        reconciliation = _db(request).create_aops_reconciliation(
+            source_filename=_safe_upload_filename(csv_file.filename),
+            source_sha256=hashlib.sha256(payload).hexdigest(),
+            rows=rows,
+        )
+    except AopsCsvValidationError as exc:
+        return _redirect(request, _aops_review_path(), str(exc), kind="error")
+    except ValueError as exc:
+        return _redirect(request, _aops_review_path(), str(exc), kind="error")
+    except (OSError, UnicodeError):
+        return _redirect(
+            request,
+            _aops_review_path(),
+            "The uploaded CSV could not be read.",
+            kind="error",
+        )
+    finally:
+        await csv_file.close()
+
+    pending_count = int(reconciliation.get("actionable_pending_count", 0))
+    matched_count = int(reconciliation.get("matched_count", 0))
+    message = (
+        f"Analysis complete: {pending_count} update"
+        f"{'s' if pending_count != 1 else ''} to review and {matched_count} AOPS row"
+        f"{'s' if matched_count != 1 else ''} already matched. No colony data changed."
+    )
+    return _redirect(
+        request,
+        _aops_review_path(int(reconciliation["id"])),
+        message,
+    )
+
+
+@router.post("/aops-reconcile/{reconciliation_id}/items/{item_id}/apply")
+def apply_aops_reconciliation_item(
+    reconciliation_id: int,
+    item_id: int,
+    request: Request,
+) -> RedirectResponse:
+    try:
+        item = _db(request).apply_aops_reconciliation_item(reconciliation_id, item_id)
+    except ValueError as exc:
+        return _redirect(
+            request,
+            _aops_review_path(reconciliation_id),
+            str(exc),
+            kind="error",
+        )
+    message = str(item.get("resolution_note") or "AOPS update applied.")
+    return _redirect(request, _aops_review_path(reconciliation_id), message)
+
+
+@router.post("/aops-reconcile/{reconciliation_id}/items/{item_id}/keep-local")
+def keep_local_aops_reconciliation_item(
+    reconciliation_id: int,
+    item_id: int,
+    request: Request,
+) -> RedirectResponse:
+    try:
+        _db(request).keep_local_aops_reconciliation_item(reconciliation_id, item_id)
+    except ValueError as exc:
+        return _redirect(
+            request,
+            _aops_review_path(reconciliation_id),
+            str(exc),
+            kind="error",
+        )
+    return _redirect(
+        request,
+        _aops_review_path(reconciliation_id),
+        "Kept the Mouse Line record. No colony data changed.",
+    )
+
+
+@router.post("/aops-reconcile/{reconciliation_id}/apply-all")
+def apply_all_aops_reconciliation(
+    reconciliation_id: int,
+    request: Request,
+) -> RedirectResponse:
+    try:
+        review = _db(request).apply_all_aops_reconciliation(reconciliation_id)
+    except ValueError as exc:
+        return _redirect(
+            request,
+            _aops_review_path(reconciliation_id),
+            str(exc),
+            kind="error",
+        )
+    applied_count = int(review["applied_count"])
+    kept_count = int(review["kept_local_count"])
+    return _redirect(
+        request,
+        _aops_review_path(reconciliation_id),
+        f"CSV update complete: {applied_count} update{'s' if applied_count != 1 else ''} applied; "
+        f"{kept_count} difference{'s' if kept_count != 1 else ''} kept local. "
+        "Existing mouse details and history were kept.",
+    )
+
+
+@router.post("/aops-reconcile/{reconciliation_id}/keep-all")
+def keep_local_all_aops_reconciliation(
+    reconciliation_id: int,
+    request: Request,
+) -> RedirectResponse:
+    try:
+        _db(request).keep_local_all_aops_reconciliation(reconciliation_id)
+    except ValueError as exc:
+        return _redirect(
+            request,
+            _aops_review_path(reconciliation_id),
+            str(exc),
+            kind="error",
+        )
+    return _redirect(
+        request,
+        _aops_review_path(reconciliation_id),
+        "Kept all pending differences in Mouse Line. No colony data changed.",
+    )
 
 
 @router.post("/cages/new")

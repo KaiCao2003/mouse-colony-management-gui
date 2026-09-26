@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import date, timedelta
 from html import unescape
@@ -13,10 +15,12 @@ from pydantic import ValidationError
 from app.config import LOGIN_ANSWER_PLACEHOLDER, Settings
 from app.database import Database
 from app.main import create_app
-from app.security import LOGIN_COOKIE_NAME
+from app.reconciliation import MAX_AOPS_CSV_BYTES
+from app.security import AOPS_UPLOAD_REQUEST_MAX_BYTES, LOGIN_COOKIE_NAME
 
 BASE_URL = "http://127.0.0.1:8765"
 TEST_LOGIN_ANSWER = "test-only-login-answer"
+TEST_INTEGRATION_TOKEN = "test-only-integration-token-0123456789abcdef"
 TEST_ROOM_ALIASES = {
     "ROOM-REGULAR": "Regular Cycle room",
     "ROOM-REVERSE": "Reverse Cycle room",
@@ -30,6 +34,7 @@ def _client(
     *,
     root_path: str = "",
     authenticated: bool = True,
+    integration_token: str | None = None,
 ) -> TestClient:
     database = Database(
         tmp_path / "route-test.db",
@@ -42,6 +47,7 @@ def _client(
             seed_on_empty=False,
             root_path=root_path,
             login_answer=TEST_LOGIN_ANSWER,
+            integration_token=integration_token,
         ),
         database=database,
         run_seed=False,
@@ -99,9 +105,148 @@ def _sort_header(html: str, field: str) -> tuple[str, str]:
     return header, unescape(link.group(1))
 
 
+def _aops_csv(*rows: tuple[str, str, str, str, str, str, str]) -> bytes:
+    header = "Cage Card ID,Status,# Animals,Room,Protocol,On Census Date,Off Census Date"
+    return ("\n".join((header, *(",".join(row) for row in rows))) + "\n").encode()
+
+
+def _colony_snapshot(database: Database) -> tuple[list[tuple[object, ...]], ...]:
+    return tuple(
+        [tuple(row) for row in database.connection.execute(query).fetchall()]
+        for query in (
+            "SELECT * FROM cages ORDER BY id",
+            "SELECT * FROM animals ORDER BY id",
+            "SELECT * FROM movements ORDER BY id",
+        )
+    )
+
+
 def test_public_login_answer_placeholder_is_rejected() -> None:
     with pytest.raises(ValidationError, match="MOUSELINE_LOGIN_ANSWER"):
         Settings(login_answer=LOGIN_ANSWER_PLACEHOLDER)
+
+
+def test_read_only_integration_api_uses_separate_bearer_token(tmp_path: Path) -> None:
+    with _client(
+        tmp_path,
+        authenticated=False,
+        integration_token=TEST_INTEGRATION_TOKEN,
+    ) as client:
+        cage_id = client.app.state.database.create_cage(
+            cage_card_id="API-CAGE",
+            animal_count=1,
+            sex="F",
+            dob="2026-01-02",
+            genotype="Ai32/WT",
+            mouse_user="Planner",
+            room="ROOM-REGULAR",
+            protocol="PROTO-1",
+        )
+        animal = client.app.state.database.list_animals(cage_id)[0]
+        client.app.state.database.update_animal(
+            int(animal["id"]),
+            legacy_id="legacy-42",
+        )
+
+        missing = client.get("/api/v1/animals/resolve", params={"identifier": animal["public_id"]})
+        wrong = client.get(
+            "/api/v1/animals/resolve",
+            params={"identifier": animal["public_id"]},
+            headers={"Authorization": "Bearer definitely-not-the-token"},
+        )
+        headers = {"Authorization": f"Bearer {TEST_INTEGRATION_TOKEN}"}
+        health = client.get("/api/v1/health", headers=headers)
+        response = client.get(
+            "/api/v1/animals/resolve",
+            params={"identifier": "legacy-42"},
+            headers=headers,
+        )
+
+    assert missing.status_code == wrong.status_code == 401
+    assert missing.json()["code"] == wrong.json()["code"] == "invalid_token"
+    assert health.status_code == 200
+    assert health.json()["capabilities"] == ["subject.read"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["matchedBy"] == "legacyId"
+    assert payload["queryIdentifier"] == "legacy-42"
+    assert payload["subject"]["publicId"] == animal["public_id"]
+    assert payload["subject"]["legacyId"] == "legacy-42"
+    assert payload["subject"]["cage"]["cageCardId"] == "API-CAGE"
+    assert payload["subject"]["surgeries"] == []
+    assert payload["usableForNavigation"] is False
+    receipt_material = {
+        "schemaVersion": 1,
+        "service": "mouse_line",
+        "subject": payload["subject"],
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            receipt_material,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert payload["subjectRecordSha256"] == expected_digest
+
+
+def test_integration_api_disabled_not_redirected_to_login(tmp_path: Path) -> None:
+    with _client(tmp_path, authenticated=False) as client:
+        response = client.get(
+            "/api/v1/health",
+            headers={"Authorization": f"Bearer {TEST_INTEGRATION_TOKEN}"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "integration_disabled"
+    assert "location" not in response.headers
+
+
+def test_integration_api_requires_exact_unambiguous_identifier(tmp_path: Path) -> None:
+    with _client(
+        tmp_path,
+        authenticated=False,
+        integration_token=TEST_INTEGRATION_TOKEN,
+    ) as client:
+        first_cage = client.app.state.database.create_cage(
+            cage_card_id="API-DUP-1",
+            animal_count=1,
+        )
+        second_cage = client.app.state.database.create_cage(
+            cage_card_id="API-DUP-2",
+            animal_count=1,
+        )
+        first = client.app.state.database.list_animals(first_cage)[0]
+        second = client.app.state.database.list_animals(second_cage)[0]
+        client.app.state.database.update_animal(int(first["id"]), legacy_id="duplicate")
+        client.app.state.database.update_animal(int(second["id"]), legacy_id="duplicate")
+        headers = {"Authorization": f"Bearer {TEST_INTEGRATION_TOKEN}"}
+
+        ambiguous = client.get(
+            "/api/v1/animals/resolve",
+            params={"identifier": "duplicate"},
+            headers=headers,
+        )
+        wrong_case = client.get(
+            "/api/v1/animals/resolve",
+            params={"identifier": str(first["public_id"]).lower()},
+            headers=headers,
+        )
+        padded = client.get(
+            "/api/v1/animals/resolve",
+            params={"identifier": f" {first['public_id']} "},
+            headers=headers,
+        )
+
+    assert ambiguous.status_code == 409
+    assert ambiguous.json()["code"] == "ambiguous_legacy_id"
+    assert wrong_case.status_code == 404
+    assert wrong_case.json()["code"] == "subject_not_found"
+    assert padded.status_code == 422
+    assert padded.json()["code"] == "invalid_identifier"
 
 
 def test_create_cage_and_render_detail(tmp_path: Path) -> None:
@@ -170,7 +315,7 @@ def test_login_page_protects_every_application_route(tmp_path: Path) -> None:
     assert health.headers["location"] == "/login?next=%2Fhealthz"
     assert cage.headers["location"] == "/login?next=%2Fcages%2F999"
     assert login.status_code == 200
-    assert "What's the PI's first name?" in login.text
+    assert "What's your PI's first name?" in login.text
     assert 'type="password" name="answer"' in login.text
     assert TEST_LOGIN_ANSWER not in login.text
     assert "app.js" not in login.text
@@ -1399,7 +1544,9 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
         html,
     )
     assert post_actions
-    cage_actions = [action for action in post_actions if action != "/logout"]
+    cage_actions = [
+        action for action in post_actions if action not in {"/logout", "/photos/recognize"}
+    ]
     assert cage_actions
     assert all("return_to=%2F%23cages" in action for action in cage_actions)
     assert "/logout" in post_actions
@@ -1460,3 +1607,510 @@ def test_cage_hash_targets_and_form_return_locations(tmp_path: Path) -> None:
     assert "Remove mouse" in html
     assert "Configured breeding rooms" not in html
     assert "Local data · No login required" not in html
+
+
+def test_aops_review_is_third_workspace_tab_and_prefixes_root_path_urls(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path, root_path="/colony/") as client:
+        root = client.get("/")
+        primary_nav = re.search(
+            r'<nav class="primary-nav".*?</nav>',
+            root.text,
+            flags=re.DOTALL,
+        )
+        assert primary_nav is not None
+        tabs = re.findall(
+            r'data-workspace-tab-link="[^"]+">([^<]+)</a>',
+            primary_nav.group(0),
+        )
+
+        analyzed = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "official.csv",
+                    _aops_csv(("CC01000001", "Active", "1", "", "", "", "")),
+                    "text/csv",
+                )
+            },
+            follow_redirects=False,
+        )
+        location = urlsplit(analyzed.headers["location"])
+        reconciliation_id = int(parse_qs(location.query)["reconciliation"][0])
+        review = client.get(analyzed.headers["location"])
+
+    assert root.status_code == 200
+    assert tabs == ["Cages", "Create cage", "Update from CSV"]
+    assert (
+        'id="aops-review" class="workspace-view" role="tabpanel" '
+        'aria-labelledby="workspace-tab-aops-review"' in root.text
+    )
+    assert 'href="/colony/#aops-review"' in root.text
+    upload_form = _form_tag(root.text, "/colony/aops-reconcile/analyze")
+    assert 'method="post"' in upload_form
+    assert 'enctype="multipart/form-data"' in upload_form
+    assert 'data-return-hash="#aops-review"' in upload_form
+    assert 'type="file" name="csv_file" accept=".csv,text/csv"' in root.text
+    assert analyzed.status_code == 303
+    assert location.path == "/colony/"
+    assert location.fragment == "aops-review"
+    assert review.status_code == 200
+    assert f'action="/colony/aops-reconcile/{reconciliation_id}/apply-all"' in review.text
+    assert f'action="/colony/aops-reconcile/{reconciliation_id}/keep-all"' in review.text
+
+
+def test_csv_review_survives_navigation_and_shows_saved_results(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        assert database.get_latest_aops_reconciliation() is None
+        payload = _aops_csv(("CC01000001", "Active", "2", "ROOM-REGULAR", "", "", ""))
+        uploaded = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={"csv_file": ("nu-export.csv", payload, "text/csv")},
+            follow_redirects=False,
+        )
+        run_id = int(parse_qs(urlsplit(uploaded.headers["location"]).query)["reconciliation"][0])
+        resumed = client.get("/?status=active")
+        assert f'data-aops-reconciliation-id="{run_id}"' in resumed.text
+        assert "2. Review and apply" in resumed.text
+        assert "Apply all 1 update" in resumed.text
+        assert database.list_cages(status=None) == []
+
+        applied = client.post(f"/aops-reconcile/{run_id}/apply-all", headers=_csrf(client))
+        assert "CSV update complete: 1 update applied" in applied.text
+        saved = client.get("/")
+        assert "Updates saved" in saved.text
+        assert "2. Review and apply" not in saved.text
+        snapshot = _colony_snapshot(database)
+
+        repeated = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={"csv_file": ("nu-export-again.csv", payload, "text/csv")},
+            follow_redirects=False,
+        )
+        latest_id = int(parse_qs(urlsplit(repeated.headers["location"]).query)["reconciliation"][0])
+        assert latest_id > run_id
+        latest = client.get("/")
+        assert f'data-aops-reconciliation-id="{latest_id}"' in latest.text
+        assert "Mouse Line matches this AOPS export" in latest.text
+        assert _colony_snapshot(database) == snapshot
+        older = client.get(f"/?reconciliation={run_id}")
+        assert f'data-aops-reconciliation-id="{run_id}"' in older.text
+        assert "Updates saved" in older.text
+
+
+def test_invalid_csv_does_not_show_previous_preview_as_new_upload(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "valid.csv",
+                    _aops_csv(("CC01000001", "Active", "2", "", "", "", "")),
+                    "text/csv",
+                )
+            },
+        )
+        latest = database.get_latest_aops_reconciliation()
+        assert latest is not None
+        before = _colony_snapshot(database)
+        rejected = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={"csv_file": ("invalid.csv", b"incorrect header", "text/csv")},
+        )
+        assert "missing required columns" in rejected.text
+        assert "data-aops-results" not in rejected.text
+        assert database.get_latest_aops_reconciliation() == latest
+        assert _colony_snapshot(database) == before
+        resumed = client.get("/")
+        assert f'data-aops-reconciliation-id="{latest["id"]}"' in resumed.text
+
+
+def test_aops_analyze_stages_differences_and_renders_escaped_review(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        database.create_cage(cage_card_id="CC11000001", animal_count=1)
+        database.create_cage(cage_card_id="CC11000002", animal_count=2)
+        database.create_cage(cage_card_id="CC11000003", animal_count=1)
+        database.create_cage(cage_card_id="CC11000005", animal_count=2)
+        before = _colony_snapshot(database)
+
+        analyzed = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "official & <unsafe>.csv",
+                    _aops_csv(
+                        ("CC11000001", "Active", "3", "", "", "", ""),
+                        ("CC11000002", "Deactivated", "2", "", "", "", ""),
+                        ("CC11000003", "Active", "1", "", "", "", ""),
+                        ("CC11000004", "Active", "2", "", "", "", ""),
+                        ("CC11000005", "Active", "1", "", "", "", ""),
+                    ),
+                    "text/csv",
+                )
+            },
+            follow_redirects=False,
+        )
+
+        location = urlsplit(analyzed.headers["location"])
+        query = parse_qs(location.query)
+        reconciliation_id = int(query["reconciliation"][0])
+        run = database.get_aops_reconciliation(reconciliation_id)
+        review = client.get(f"/?reconciliation={reconciliation_id}")
+        after = _colony_snapshot(database)
+
+    assert analyzed.status_code == 303
+    assert location.path == "/"
+    assert location.fragment == "aops-review"
+    assert query["kind"] == ["success"]
+    assert "No colony data changed" in query["message"][0]
+    assert after == before
+    assert run is not None
+    assert run["source_filename"] == "official & <unsafe>.csv"
+    assert run["row_count"] == 5
+    assert run["matched_count"] == 1
+    assert run["protected_count"] == 1
+    assert run["actionable_pending_count"] == 3
+    assert run["stats"]["kind_counts"] == {
+        "activate_cage": 0,
+        "add_cage": 1,
+        "add_mice": 1,
+        "deactivate_cage": 1,
+        "local_ahead": 1,
+        "metadata_protected": 0,
+        "status_conflict": 0,
+    }
+
+    assert review.status_code == 200
+    assert "official &amp; &lt;unsafe&gt;.csv · 5 rows" in review.text
+    assert "official & <unsafe>.csv" not in review.text
+    assert "3 awaiting review" in review.text
+    for label, value in (
+        ("AOPS rows", 5),
+        ("Already matched", 1),
+        ("Protected locally", 1),
+        ("Applied", 0),
+        ("Kept local", 1),
+    ):
+        assert f"<dt>{label}</dt><dd>{value}</dd>" in review.text
+    for group_heading in (
+        "New cages",
+        "Additional mice",
+        "Cages to deactivate",
+        "Mouse Line has more records",
+    ):
+        assert re.search(rf">{re.escape(group_heading)} <span>1</span>", review.text)
+    for item in run["items"]:
+        assert f'id="aops-item-{item["id"]}"' in review.text
+    assert f'action="/aops-reconcile/{reconciliation_id}/apply-all"' in review.text
+    assert f'action="/aops-reconcile/{reconciliation_id}/keep-all"' in review.text
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "error_text"),
+    (
+        (
+            "malformed.csv",
+            b"Cage Card ID,Status\nCC12000001,Active\n",
+            "missing required columns",
+        ),
+        (
+            "oversized.csv",
+            b"x" * (MAX_AOPS_CSV_BYTES + 1),
+            "exceeds",
+        ),
+    ),
+    ids=("malformed", "oversized"),
+)
+def test_aops_analyze_rejects_invalid_upload_without_creating_a_run(
+    tmp_path: Path,
+    filename: str,
+    payload: bytes,
+    error_text: str,
+) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        before = _colony_snapshot(database)
+        response = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={"csv_file": (filename, payload, "text/csv")},
+            follow_redirects=False,
+        )
+        location = urlsplit(response.headers["location"])
+        query = parse_qs(location.query)
+        rendered_error = client.get(response.headers["location"])
+        run_count = int(
+            database.connection.execute("SELECT COUNT(*) FROM aops_reconciliations").fetchone()[0]
+        )
+        after = _colony_snapshot(database)
+
+    assert response.status_code == 303
+    assert location.path == "/"
+    assert location.fragment == "aops-review"
+    assert "reconciliation" not in query
+    assert query["kind"] == ["error"]
+    assert error_text in query["message"][0]
+    assert rendered_error.status_code == 200
+    assert 'class="notice notice--error"' in rendered_error.text
+    assert run_count == 0
+    assert after == before
+
+
+def test_aops_analyze_rejects_oversized_request_before_multipart_parsing(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as client:
+        headers = {
+            **_csrf(client),
+            "Content-Length": str(AOPS_UPLOAD_REQUEST_MAX_BYTES + 1),
+            "Content-Type": "multipart/form-data; boundary=unused",
+        }
+        response = client.post(
+            "/aops-reconcile/analyze",
+            headers=headers,
+            content=b"",
+        )
+        run_count = int(
+            client.app.state.database.connection.execute(
+                "SELECT COUNT(*) FROM aops_reconciliations"
+            ).fetchone()[0]
+        )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "request_too_large"
+    assert run_count == 0
+
+
+def test_aops_per_item_routes_validate_pair_and_apply_or_keep_selected_changes(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        cage_id = database.create_cage(
+            cage_card_id="CC21000001",
+            animal_count=1,
+            sex="F",
+            dob="2026-01-02",
+            genotype="local-genotype",
+            mouse_user="Local user",
+        )
+        original_animal = database.list_animals(cage_id)[0]
+        original_record = database.get_animal(int(original_animal["id"]))
+        assert original_record is not None
+
+        first_analysis = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "per-item.csv",
+                    _aops_csv(
+                        ("CC21000001", "Active", "3", "", "", "", ""),
+                        ("CC21000002", "Active", "2", "", "", "", ""),
+                    ),
+                    "text/csv",
+                )
+            },
+            follow_redirects=False,
+        )
+        first_run_id = int(
+            parse_qs(urlsplit(first_analysis.headers["location"]).query)["reconciliation"][0]
+        )
+        first_run = database.get_aops_reconciliation(first_run_id)
+        assert first_run is not None
+        add_mice_item = first_run["groups"]["add_mice"][0]
+        add_cage_item = first_run["groups"]["add_cage"][0]
+
+        second_analysis = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "other-run.csv",
+                    _aops_csv(("CC21999999", "Active", "1", "", "", "", "")),
+                    "text/csv",
+                )
+            },
+            follow_redirects=False,
+        )
+        second_run_id = int(
+            parse_qs(urlsplit(second_analysis.headers["location"]).query)["reconciliation"][0]
+        )
+        staged_snapshot = _colony_snapshot(database)
+        headers = _csrf(client)
+
+        wrong_run = client.post(
+            f"/aops-reconcile/{second_run_id}/items/{add_mice_item['id']}/apply",
+            headers=headers,
+            follow_redirects=False,
+        )
+        missing_item = client.post(
+            f"/aops-reconcile/{first_run_id}/items/999999/keep-local",
+            headers=headers,
+            follow_redirects=False,
+        )
+        missing_review = client.get("/?reconciliation=999999")
+        assert _colony_snapshot(database) == staged_snapshot
+
+        applied = client.post(
+            f"/aops-reconcile/{first_run_id}/items/{add_mice_item['id']}/apply",
+            headers=headers,
+            follow_redirects=False,
+        )
+        kept = client.post(
+            f"/aops-reconcile/{first_run_id}/items/{add_cage_item['id']}/keep-local",
+            headers=headers,
+            follow_redirects=False,
+        )
+        apply_after_keep = client.post(
+            f"/aops-reconcile/{first_run_id}/items/{add_cage_item['id']}/apply",
+            headers=headers,
+            follow_redirects=False,
+        )
+        refreshed = database.get_aops_reconciliation(first_run_id)
+        aops_movements = database.connection.execute(
+            "SELECT movement_type FROM movements WHERE movement_type = 'aops_reconcile'"
+        ).fetchall()
+        cage = database.get_cage(cage_id)
+        original_after = database.get_animal(int(original_animal["id"]))
+        cage_count = database.count_cages()
+
+    for invalid_response in (wrong_run, missing_item):
+        invalid_query = parse_qs(urlsplit(invalid_response.headers["location"]).query)
+        assert invalid_response.status_code == 303
+        assert invalid_query["kind"] == ["error"]
+        assert invalid_query["message"] == ["AOPS reconciliation item not found."]
+    assert missing_review.status_code == 404
+
+    assert applied.status_code == kept.status_code == apply_after_keep.status_code == 303
+    assert urlsplit(applied.headers["location"]).fragment == "aops-review"
+    assert urlsplit(kept.headers["location"]).fragment == "aops-review"
+    assert cage is not None and (cage["active_count"], cage["total_count"]) == (3, 3)
+    assert original_after == original_record
+    assert cage_count == 1
+    assert [row["movement_type"] for row in aops_movements] == [
+        "aops_reconcile",
+        "aops_reconcile",
+    ]
+    assert refreshed is not None
+    assert refreshed["stats"]["applied"] == 1
+    assert refreshed["stats"]["kept_local"] == 1
+    assert refreshed["stats"]["pending"] == 0
+
+
+def test_aops_bulk_routes_apply_all_or_keep_all_pending_differences(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as client:
+        database = client.app.state.database
+        add_mice_id = database.create_cage(cage_card_id="CC31000001", animal_count=1)
+        deactivate_id = database.create_cage(cage_card_id="CC31000002", animal_count=2)
+
+        apply_analysis = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "bulk-apply.csv",
+                    _aops_csv(
+                        ("CC31000001", "Active", "3", "", "", "", ""),
+                        ("CC31000002", "Deactivated", "2", "", "", "", ""),
+                        ("CC31000003", "Active", "2", "", "", "", ""),
+                    ),
+                    "text/csv",
+                )
+            },
+            follow_redirects=False,
+        )
+        apply_run_id = int(
+            parse_qs(urlsplit(apply_analysis.headers["location"]).query)["reconciliation"][0]
+        )
+        applied = client.post(
+            f"/aops-reconcile/{apply_run_id}/apply-all",
+            headers=_csrf(client),
+            follow_redirects=False,
+        )
+        applied_run = database.get_aops_reconciliation(apply_run_id)
+
+        keep_cage_id = database.create_cage(cage_card_id="CC31000004", animal_count=1)
+        keep_analysis = client.post(
+            "/aops-reconcile/analyze",
+            headers=_csrf(client),
+            files={
+                "csv_file": (
+                    "bulk-keep.csv",
+                    _aops_csv(
+                        ("CC31000004", "Active", "3", "", "", "", ""),
+                        ("CC31000005", "Active", "1", "", "", "", ""),
+                    ),
+                    "text/csv",
+                )
+            },
+            follow_redirects=False,
+        )
+        keep_run_id = int(
+            parse_qs(urlsplit(keep_analysis.headers["location"]).query)["reconciliation"][0]
+        )
+        before_keep = _colony_snapshot(database)
+        kept = client.post(
+            f"/aops-reconcile/{keep_run_id}/keep-all",
+            headers=_csrf(client),
+            follow_redirects=False,
+        )
+        kept_run = database.get_aops_reconciliation(keep_run_id)
+        after_keep = _colony_snapshot(database)
+        missing_run = client.post(
+            "/aops-reconcile/999999/apply-all",
+            headers=_csrf(client),
+            follow_redirects=False,
+        )
+        aops_movement_count = int(
+            database.connection.execute(
+                "SELECT COUNT(*) FROM movements WHERE movement_type = 'aops_reconcile'"
+            ).fetchone()[0]
+        )
+        add_mice_cage = database.get_cage(add_mice_id)
+        deactivated_cage = database.get_cage(deactivate_id)
+        all_cages = database.list_cages(status=None)
+        kept_cage = database.get_cage(keep_cage_id)
+
+    assert applied.status_code == 303
+    assert urlsplit(applied.headers["location"]).fragment == "aops-review"
+    assert applied_run is not None
+    assert applied_run["stats"]["applied"] == 3
+    assert applied_run["stats"]["pending"] == 0
+    assert add_mice_cage is not None and add_mice_cage["active_count"] == 3
+    assert deactivated_cage is not None
+    assert (deactivated_cage["status"], deactivated_cage["active_count"]) == (
+        "inactive",
+        0,
+    )
+    new_cage = next(cage for cage in all_cages if cage["cage_card_id"] == "CC31000003")
+    assert (new_cage["active_count"], new_cage["total_count"]) == (2, 2)
+    assert aops_movement_count == 4
+
+    assert kept.status_code == 303
+    assert urlsplit(kept.headers["location"]).fragment == "aops-review"
+    assert kept_run is not None
+    assert kept_run["stats"]["kept_local"] == 2
+    assert kept_run["stats"]["pending"] == 0
+    assert after_keep == before_keep
+    assert kept_cage is not None and kept_cage["active_count"] == 1
+    assert all(cage["cage_card_id"] != "CC31000005" for cage in all_cages)
+
+    missing_query = parse_qs(urlsplit(missing_run.headers["location"]).query)
+    assert missing_run.status_code == 303
+    assert missing_query["kind"] == ["error"]
+    assert missing_query["message"] == ["AOPS reconciliation not found."]

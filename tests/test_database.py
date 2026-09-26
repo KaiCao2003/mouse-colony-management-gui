@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 from datetime import date, timedelta
@@ -29,6 +30,42 @@ def database(tmp_path: Path) -> Database:
         yield value
     finally:
         value.close()
+
+
+def _aops_row(
+    cage_card_id: str,
+    *,
+    status: str,
+    count: int,
+    room: str | None = None,
+    protocol: str | None = None,
+    on_census_date: str | None = None,
+    off_census_date: str | None = None,
+) -> dict[str, object]:
+    return {
+        "cage_card_id": cage_card_id,
+        "status": status,
+        "count": count,
+        "room": room,
+        "protocol": protocol,
+        "on_census_date": on_census_date,
+        "off_census_date": off_census_date,
+    }
+
+
+def _aops_digest(value: str = "test-aops-export") -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _colony_snapshot(database: Database) -> tuple[list[tuple[object, ...]], ...]:
+    return tuple(
+        [tuple(row) for row in database.connection.execute(query).fetchall()]
+        for query in (
+            "SELECT * FROM cages ORDER BY id",
+            "SELECT * FROM animals ORDER BY id",
+            "SELECT * FROM movements ORDER BY id",
+        )
+    )
 
 
 def test_create_cage_generates_individual_ids_with_one_family_letter(
@@ -1108,3 +1145,802 @@ def test_cage_last_changed_uses_latest_related_activity(database: Database) -> N
     )
     cage = database.get_cage(cage_id)
     assert cage is not None and cage["last_changed_date"] == "2024-04-04"
+
+
+def test_aops_analysis_stages_actions_and_protects_local_data(database: Database) -> None:
+    add_mice_id = database.create_cage(cage_card_id="CC10000001", animal_count=1)
+    activate_id = database.create_cage(
+        cage_card_id="CC10000002",
+        status="on_order",
+        animal_count=1,
+        creation_type="import",
+    )
+    deactivate_id = database.create_cage(cage_card_id="CC10000003", animal_count=2)
+    local_ahead_id = database.create_cage(cage_card_id="CC10000004", animal_count=3)
+    conflict_id = database.create_cage(
+        cage_card_id="CC10000005",
+        status="inactive",
+        animal_count=1,
+        creation_type="import",
+    )
+    metadata_id = database.create_cage(
+        cage_card_id="CC10000006",
+        animal_count=1,
+        room="LOCAL-ROOM",
+        protocol="LOCAL-PROTOCOL",
+        on_census_date="2026-01-01",
+    )
+    unchanged_id = database.create_cage(cage_card_id="CC10000008", animal_count=1)
+    assert {
+        add_mice_id,
+        activate_id,
+        deactivate_id,
+        local_ahead_id,
+        conflict_id,
+        metadata_id,
+        unchanged_id,
+    } == set(range(1, 8))
+
+    def colony_snapshot() -> tuple[list[tuple[object, ...]], ...]:
+        return tuple(
+            [tuple(row) for row in database.connection.execute(query).fetchall()]
+            for query in (
+                "SELECT * FROM cages ORDER BY id",
+                "SELECT * FROM animals ORDER BY id",
+                "SELECT * FROM movements ORDER BY id",
+            )
+        )
+
+    before = colony_snapshot()
+    run = database.create_aops_reconciliation(
+        source_filename="aops.csv",
+        source_sha256=_aops_digest(),
+        rows=[
+            _aops_row("CC10000001", status="active", count=3),
+            _aops_row("CC10000002", status="active", count=3),
+            _aops_row("CC10000003", status="inactive", count=2),
+            _aops_row("CC10000004", status="active", count=2),
+            _aops_row("CC10000005", status="active", count=1),
+            _aops_row(
+                "CC10000006",
+                status="active",
+                count=1,
+                room="AOPS-ROOM",
+                protocol="AOPS-PROTOCOL",
+                on_census_date="2026-02-02",
+                off_census_date="2026-03-03",
+            ),
+            _aops_row(
+                "CC10000007",
+                status="inactive",
+                count=2,
+                room="AOPS-ROOM",
+                protocol="AOPS-PROTOCOL",
+                on_census_date="2026-01-01",
+                off_census_date="2026-01-02",
+            ),
+            _aops_row("CC10000008", status="active", count=1),
+        ],
+    )
+
+    assert colony_snapshot() == before
+    assert run["row_count"] == 8
+    assert run["matched_count"] == 1
+    assert run["protected_count"] == 3
+    assert run["stats"] == {
+        "total_items": 7,
+        "actionable": 4,
+        "protected": 3,
+        "pending": 4,
+        "applied": 0,
+        "kept_local": 3,
+        "kind_counts": {
+            "activate_cage": 1,
+            "add_cage": 1,
+            "add_mice": 1,
+            "deactivate_cage": 1,
+            "local_ahead": 1,
+            "metadata_protected": 1,
+            "status_conflict": 1,
+        },
+    }
+    decisions = {item["kind"]: item["decision"] for item in run["items"]}
+    assert decisions == {
+        "add_mice": "pending",
+        "activate_cage": "pending",
+        "deactivate_cage": "pending",
+        "local_ahead": "kept_local",
+        "status_conflict": "kept_local",
+        "metadata_protected": "kept_local",
+        "add_cage": "pending",
+    }
+    metadata_item = run["grouped"]["metadata_protected"][0]
+    assert metadata_item["protected_details"]["differences"] == [
+        {"field": "room", "local": "LOCAL-ROOM", "official": "AOPS-ROOM"},
+        {
+            "field": "protocol",
+            "local": "LOCAL-PROTOCOL",
+            "official": "AOPS-PROTOCOL",
+        },
+        {"field": "on_census_date", "local": "2026-01-01", "official": "2026-02-02"},
+        {"field": "off_census_date", "local": None, "official": "2026-03-03"},
+    ]
+
+
+def test_aops_add_mice_preserves_existing_records_and_targets_current_deficit(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="CC20000001",
+        animal_count=1,
+        sex="F",
+        dob="2026-01-02",
+        genotype="Ai32/WT",
+        mouse_user="Local user",
+        room="ROOM-REGULAR",
+        protocol="LOCAL-PROTOCOL",
+        is_breeding_pair=True,
+    )
+    original_id = int(database.list_animals(cage_id)[0]["id"])
+    database.update_animal(original_id, legacy_id="local-1", note="keep this")
+    database.add_tag(cage_id, "keep-tag")
+    database.add_surgery(
+        original_id,
+        surgery_date="2026-06-01",
+        surgery_time="09:30",
+        operator="Operator",
+        surgery_type="Headplate",
+    )
+    original = database.get_animal(original_id)
+    assert original is not None
+
+    run = database.create_aops_reconciliation(
+        source_filename="add.csv",
+        source_sha256=_aops_digest("add"),
+        rows=[
+            _aops_row(
+                "CC20000001",
+                status="active",
+                count=3,
+                room="ROOM-REGULAR",
+                protocol="LOCAL-PROTOCOL",
+            )
+        ],
+    )
+    item = run["grouped"]["add_mice"][0]
+
+    manually_added = database.add_animals(cage_id, count=1, sex="M", genotype="manual")[0]
+    applied = database.apply_aops_reconciliation_item(run["id"], item["id"])
+    reapplied = database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert applied["decision"] == reapplied["decision"] == "applied"
+    animals = database.list_animals(cage_id, include_inactive=True)
+    assert len(animals) == 3
+    assert database.get_animal(original_id) == original
+    assert database.get_animal(int(manually_added["id"])) == manually_added
+    added = next(
+        animal for animal in animals if animal["id"] not in {original_id, manually_added["id"]}
+    )
+    assert {
+        "sex": added["sex"],
+        "dob": added["dob"],
+        "genotype": added["genotype"],
+        "mouse_user": added["mouse_user"],
+        "note": added["note"],
+        "status": added["status"],
+    } == {
+        "sex": "U",
+        "dob": None,
+        "genotype": None,
+        "mouse_user": None,
+        "note": None,
+        "status": "active",
+    }
+    assert database.get_cage(cage_id)["tags"] == [{"id": 1, "name": "keep-tag"}]  # type: ignore[index]
+    aops_movements = database.connection.execute(
+        "SELECT animal_id FROM movements WHERE movement_type = 'aops_reconcile'"
+    ).fetchall()
+    assert [int(row["animal_id"]) for row in aops_movements] == [added["id"]]
+
+
+def test_aops_add_mice_rejects_when_count_falls_below_staged_snapshot(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(cage_card_id="CC21000001", animal_count=2)
+    run = database.create_aops_reconciliation(
+        source_filename="stale-add.csv",
+        source_sha256=_aops_digest("stale-add"),
+        rows=[_aops_row("CC21000001", status="active", count=4)],
+    )
+    item = run["grouped"]["add_mice"][0]
+    assert item["local_count"] == 2
+
+    database.toggle_animal(int(database.list_animals(cage_id)[0]["id"]))
+    before_apply = _colony_snapshot(database)
+
+    with pytest.raises(ValueError, match="mouse count fell after AOPS analysis"):
+        database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert _colony_snapshot(database) == before_apply
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert (cage["status"], cage["active_count"], cage["total_count"]) == (
+        "active",
+        1,
+        2,
+    )
+    refreshed = database.get_aops_reconciliation(run["id"])
+    assert refreshed is not None
+    assert refreshed["stats"]["pending"] == 1
+    assert refreshed["stats"]["applied"] == 0
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM movements WHERE movement_type = 'aops_reconcile'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_aops_activation_reuses_ordered_mouse_and_adds_only_new_deficit(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="CC30000001",
+        status="on_order",
+        animal_count=1,
+        sex="F",
+        dob="2026-02-03",
+        genotype="Ordered genotype",
+        mouse_user="Ordered user",
+        room="ROOM-REGULAR",
+        protocol="LOCAL-PROTOCOL",
+        creation_type="import",
+    )
+    ordered_id = int(database.list_animals(cage_id, include_inactive=True)[0]["id"])
+    database.update_animal(ordered_id, legacy_id="ordered-legacy", note="ordered note")
+    database.add_surgery(
+        ordered_id,
+        surgery_date="2026-06-02",
+        surgery_time=None,
+        operator="Operator",
+        surgery_type="Headplate",
+    )
+    before = database.get_animal(ordered_id)
+    assert before is not None and before["status"] == "inactive"
+
+    run = database.create_aops_reconciliation(
+        source_filename="activate.csv",
+        source_sha256=_aops_digest("activate"),
+        rows=[
+            _aops_row(
+                "CC30000001",
+                status="active",
+                count=3,
+                room="ROOM-REGULAR",
+                protocol="LOCAL-PROTOCOL",
+            )
+        ],
+    )
+    item = run["grouped"]["activate_cage"][0]
+    result = database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert result["decision"] == "applied"
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert (cage["status"], cage["active_count"], cage["total_count"]) == ("active", 3, 3)
+    after = database.get_animal(ordered_id)
+    assert after is not None
+    for field in (
+        "id",
+        "public_id",
+        "legacy_id",
+        "cage_id",
+        "family_letter",
+        "sex",
+        "dob",
+        "genotype",
+        "mouse_user",
+        "note",
+        "created_at",
+        "surgeries",
+    ):
+        assert after[field] == before[field]
+    assert after["status"] == "active"
+    assert after["inactive_by_cage"] == 0
+    new_mice = [
+        animal
+        for animal in database.list_animals(cage_id, include_inactive=True)
+        if animal["id"] != ordered_id
+    ]
+    assert len(new_mice) == 2
+    assert {animal["status"] for animal in new_mice} == {"active"}
+    assert {animal["sex"] for animal in new_mice} == {"U"}
+    assert database.apply_aops_reconciliation_item(run["id"], item["id"])["decision"] == "applied"
+    assert database.get_cage(cage_id)["total_count"] == 3  # type: ignore[index]
+
+
+def test_aops_activation_rejects_when_ordered_count_falls_below_staged_snapshot(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="CC31000001",
+        status="on_order",
+        animal_count=2,
+        creation_type="import",
+    )
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    destination_id = database.create_cage(
+        cage_card_id="CC31000002",
+        status="on_order",
+        family_letter=str(cage["family_letter"]),
+    )
+    run = database.create_aops_reconciliation(
+        source_filename="stale-activate.csv",
+        source_sha256=_aops_digest("stale-activate"),
+        rows=[_aops_row("CC31000001", status="active", count=3)],
+    )
+    item = run["grouped"]["activate_cage"][0]
+    assert item["local_count"] == 2
+
+    moved_id = int(database.list_animals(cage_id, include_inactive=True)[0]["id"])
+    with database.transaction() as connection:
+        connection.execute(
+            "UPDATE animals SET cage_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (destination_id, moved_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO movements(animal_id, from_cage_id, to_cage_id, movement_type)
+            VALUES (?, ?, ?, 'split')
+            """,
+            (moved_id, cage_id, destination_id),
+        )
+    before_apply = _colony_snapshot(database)
+
+    with pytest.raises(ValueError, match="mouse count fell after AOPS analysis"):
+        database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert _colony_snapshot(database) == before_apply
+    source = database.get_cage(cage_id)
+    assert source is not None
+    assert (source["status"], source["active_count"], source["total_count"]) == (
+        "on_order",
+        0,
+        1,
+    )
+    refreshed = database.get_aops_reconciliation(run["id"])
+    assert refreshed is not None
+    assert refreshed["stats"]["pending"] == 1
+    assert refreshed["stats"]["applied"] == 0
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM movements WHERE movement_type = 'aops_reconcile'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_aops_deactivation_rejects_a_stale_active_mouse_count(database: Database) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="CC39000001",
+        animal_count=1,
+        is_breeding_pair=True,
+    )
+    run = database.create_aops_reconciliation(
+        source_filename="stale-deactivation.csv",
+        source_sha256=_aops_digest("stale-deactivation"),
+        rows=[_aops_row("CC39000001", status="inactive", count=1)],
+    )
+    item = run["grouped"]["deactivate_cage"][0]
+    database.add_animals(cage_id, count=1)
+    before_apply = _colony_snapshot(database)
+
+    with pytest.raises(ValueError, match="active mouse count changed after AOPS analysis"):
+        database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert _colony_snapshot(database) == before_apply
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert (cage["status"], cage["active_count"], cage["total_count"]) == (
+        "active",
+        2,
+        2,
+    )
+    refreshed = database.get_aops_reconciliation(run["id"])
+    assert refreshed is not None
+    assert refreshed["stats"]["pending"] == 1
+    assert refreshed["stats"]["applied"] == 0
+
+
+def test_aops_deactivation_is_soft_and_preserves_individual_inactive_history(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(cage_card_id="CC40000001", animal_count=3)
+    animals = database.list_animals(cage_id)
+    independent_id = int(animals[0]["id"])
+    active_ids = {int(animals[1]["id"]), int(animals[2]["id"])}
+    database.update_animal(independent_id, legacy_id="keep-history", note="local detail")
+    database.toggle_animal(independent_id)
+
+    run = database.create_aops_reconciliation(
+        source_filename="deactivate.csv",
+        source_sha256=_aops_digest("deactivate"),
+        rows=[_aops_row("CC40000001", status="inactive", count=3)],
+    )
+    item = run["grouped"]["deactivate_cage"][0]
+    database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    cage = database.get_cage(cage_id)
+    assert cage is not None and cage["status"] == "inactive" and cage["active_count"] == 0
+    records = {
+        int(animal["id"]): animal
+        for animal in database.list_animals(cage_id, include_inactive=True)
+    }
+    assert records[independent_id]["inactive_by_cage"] == 0
+    assert records[independent_id]["legacy_id"] == "keep-history"
+    assert records[independent_id]["note"] == "local detail"
+    assert {records[animal_id]["inactive_by_cage"] for animal_id in active_ids} == {1}
+
+    database.toggle_cage(cage_id)
+    restored = database.get_cage(cage_id)
+    assert restored is not None and restored["active_count"] == 2
+    assert database.get_animal(independent_id)["status"] == "inactive"  # type: ignore[index]
+
+
+def test_aops_inactive_cage_deficit_adds_only_inactive_historical_records(
+    database: Database,
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="CC41000001",
+        status="inactive",
+        animal_count=1,
+        sex="F",
+        dob="2026-01-02",
+        genotype="local-genotype",
+        mouse_user="Local user",
+        room="ROOM-REGULAR",
+        protocol="LOCAL-PROTOCOL",
+        creation_type="import",
+    )
+    original_id = int(database.list_animals(cage_id, include_inactive=True)[0]["id"])
+    database.update_animal(original_id, legacy_id="inactive-history", note="keep this")
+    original = database.get_animal(original_id)
+    assert original is not None
+
+    run = database.create_aops_reconciliation(
+        source_filename="inactive-deficit.csv",
+        source_sha256=_aops_digest("inactive-deficit"),
+        rows=[
+            _aops_row(
+                "CC41000001",
+                status="inactive",
+                count=3,
+                room="ROOM-REGULAR",
+                protocol="LOCAL-PROTOCOL",
+            )
+        ],
+    )
+    assert run["grouped"]["deactivate_cage"] == []
+    item = run["grouped"]["add_mice"][0]
+    assert (item["official_status"], item["local_count"], item["delta"]) == (
+        "inactive",
+        1,
+        2,
+    )
+    assert "inactive historical" in item["effect"]
+
+    applied = database.apply_aops_reconciliation_item(run["id"], item["id"])
+    reapplied = database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert applied["decision"] == reapplied["decision"] == "applied"
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert (cage["status"], cage["active_count"], cage["total_count"]) == (
+        "inactive",
+        0,
+        3,
+    )
+    assert database.get_animal(original_id) == original
+    added = [
+        animal
+        for animal in database.list_animals(cage_id, include_inactive=True)
+        if animal["id"] != original_id
+    ]
+    assert len(added) == 2
+    assert {
+        (
+            animal["status"],
+            animal["inactive_by_cage"],
+            animal["sex"],
+            animal["dob"],
+            animal["genotype"],
+            animal["mouse_user"],
+            animal["note"],
+        )
+        for animal in added
+    } == {("inactive", 0, "U", None, None, None, None)}
+    aops_movement_ids = {
+        int(row["animal_id"])
+        for row in database.connection.execute(
+            "SELECT animal_id FROM movements WHERE movement_type = 'aops_reconcile'"
+        ).fetchall()
+    }
+    assert aops_movement_ids == {int(animal["id"]) for animal in added}
+
+
+@pytest.mark.parametrize(
+    "approval_order",
+    (
+        ("add_mice", "deactivate_cage"),
+        ("deactivate_cage", "add_mice"),
+    ),
+    ids=("history-then-deactivate", "deactivate-then-history"),
+)
+def test_aops_active_to_inactive_deficit_stages_independent_items_in_either_order(
+    database: Database,
+    approval_order: tuple[str, str],
+) -> None:
+    cage_id = database.create_cage(
+        cage_card_id="CC42000001",
+        animal_count=1,
+        sex="M",
+        dob="2026-02-03",
+        genotype="existing-genotype",
+        mouse_user="Existing user",
+        room="ROOM-REVERSE",
+        protocol="LOCAL-PROTOCOL",
+    )
+    original_id = int(database.list_animals(cage_id)[0]["id"])
+    database.update_animal(original_id, legacy_id="existing-history", note="preserve me")
+    original = database.get_animal(original_id)
+    assert original is not None
+
+    run = database.create_aops_reconciliation(
+        source_filename="deactivate-with-deficit.csv",
+        source_sha256=_aops_digest("-".join(approval_order)),
+        rows=[
+            _aops_row(
+                "CC42000001",
+                status="inactive",
+                count=3,
+                room="ROOM-REVERSE",
+                protocol="LOCAL-PROTOCOL",
+            )
+        ],
+    )
+    items = {kind: run["grouped"][kind][0] for kind in approval_order}
+    assert run["actionable_pending_count"] == 2
+    assert (items["add_mice"]["local_count"], items["add_mice"]["delta"]) == (1, 2)
+    assert items["deactivate_cage"]["local_count"] == 1
+
+    first = database.apply_aops_reconciliation_item(run["id"], items[approval_order[0]]["id"])
+    midway = database.get_cage(cage_id)
+    assert first["decision"] == "applied"
+    assert midway is not None
+    if approval_order[0] == "add_mice":
+        assert (midway["status"], midway["active_count"], midway["total_count"]) == (
+            "active",
+            1,
+            3,
+        )
+    else:
+        assert (midway["status"], midway["active_count"], midway["total_count"]) == (
+            "inactive",
+            0,
+            1,
+        )
+
+    second = database.apply_aops_reconciliation_item(run["id"], items[approval_order[1]]["id"])
+    assert second["decision"] == "applied"
+    for kind in approval_order:
+        assert (
+            database.apply_aops_reconciliation_item(run["id"], items[kind]["id"])["decision"]
+            == "applied"
+        )
+
+    cage = database.get_cage(cage_id)
+    assert cage is not None
+    assert (cage["status"], cage["active_count"], cage["total_count"]) == (
+        "inactive",
+        0,
+        3,
+    )
+    existing = database.get_animal(original_id)
+    assert existing is not None
+    for field in (
+        "id",
+        "public_id",
+        "legacy_id",
+        "cage_id",
+        "family_letter",
+        "sex",
+        "dob",
+        "genotype",
+        "mouse_user",
+        "note",
+        "created_at",
+        "surgeries",
+    ):
+        assert existing[field] == original[field]
+    assert existing["status"] == "inactive"
+    assert existing["inactive_by_cage"] == 1
+
+    added = [
+        animal
+        for animal in database.list_animals(cage_id, include_inactive=True)
+        if animal["id"] != original_id
+    ]
+    assert len(added) == 2
+    assert {animal["status"] for animal in added} == {"inactive"}
+    assert {animal["inactive_by_cage"] for animal in added} == {0}
+    assert {animal["sex"] for animal in added} == {"U"}
+    aops_movement_ids = {
+        int(row["animal_id"])
+        for row in database.connection.execute(
+            "SELECT animal_id FROM movements WHERE movement_type = 'aops_reconcile'"
+        ).fetchall()
+    }
+    assert aops_movement_ids == {int(animal["id"]) for animal in added}
+    refreshed = database.get_aops_reconciliation(run["id"])
+    assert refreshed is not None
+    assert refreshed["stats"]["applied"] == 2
+    assert refreshed["stats"]["pending"] == 0
+
+
+def test_aops_bulk_apply_creates_missing_cages_with_source_provenance(
+    database: Database,
+) -> None:
+    run = database.create_aops_reconciliation(
+        source_filename="new-cages.csv",
+        source_sha256=_aops_digest("new-cages"),
+        rows=[
+            _aops_row(
+                "CC50000001",
+                status="active",
+                count=2,
+                room="ROOM-REGULAR",
+                protocol="P-1",
+                on_census_date="2026-08-01",
+            ),
+            _aops_row(
+                "CC50000002",
+                status="inactive",
+                count=2,
+                room="ROOM-REVERSE",
+                protocol="P-1",
+                on_census_date="2026-07-01",
+                off_census_date="2026-07-02",
+            ),
+            _aops_row(
+                "CC50000003",
+                status="on_order",
+                count=1,
+                room="ROOM-BREEDING",
+                protocol="P-1",
+            ),
+        ],
+    )
+    applied = database.apply_all_aops_reconciliation(run["id"])
+
+    assert applied["stats"]["applied"] == 3
+    cages = {cage["cage_card_id"]: cage for cage in database.list_cages(status=None)}
+    assert (cages["CC50000001"]["active_count"], cages["CC50000001"]["total_count"]) == (
+        2,
+        2,
+    )
+    assert (cages["CC50000002"]["active_count"], cages["CC50000002"]["total_count"]) == (
+        0,
+        2,
+    )
+    assert (cages["CC50000003"]["active_count"], cages["CC50000003"]["total_count"]) == (
+        0,
+        1,
+    )
+    assert cages["CC50000002"]["off_census_date"] == "2026-07-02"
+    assert cages["CC50000003"]["is_breeding_pair"] is True
+    stored = database.connection.execute(
+        "SELECT cage_card_id, creation_type FROM cages ORDER BY cage_card_id"
+    ).fetchall()
+    assert [(row["cage_card_id"], row["creation_type"]) for row in stored] == [
+        ("CC50000001", "aops_reconcile"),
+        ("CC50000002", "aops_reconcile"),
+        ("CC50000003", "aops_reconcile"),
+    ]
+    movements = database.connection.execute(
+        "SELECT movement_type FROM movements ORDER BY id"
+    ).fetchall()
+    assert [row["movement_type"] for row in movements] == ["aops_reconcile"] * 5
+
+
+def test_aops_keep_local_is_final_and_does_not_change_colony(database: Database) -> None:
+    cage_id = database.create_cage(cage_card_id="CC60000001", animal_count=1)
+    run = database.create_aops_reconciliation(
+        source_filename="keep.csv",
+        source_sha256=_aops_digest("keep"),
+        rows=[_aops_row("CC60000001", status="active", count=2)],
+    )
+    item = run["grouped"]["add_mice"][0]
+
+    kept = database.keep_local_aops_reconciliation_item(run["id"], item["id"])
+    approve_after_keep = database.apply_aops_reconciliation_item(run["id"], item["id"])
+
+    assert kept["decision"] == approve_after_keep["decision"] == "kept_local"
+    assert database.get_cage(cage_id)["active_count"] == 1  # type: ignore[index]
+
+    second_run = database.create_aops_reconciliation(
+        source_filename="keep-all.csv",
+        source_sha256=_aops_digest("keep-all"),
+        rows=[
+            _aops_row("CC60000001", status="active", count=3),
+            _aops_row("CC60000002", status="active", count=1),
+        ],
+    )
+    kept_all = database.keep_local_all_aops_reconciliation(second_run["id"])
+    assert kept_all["stats"]["pending"] == 0
+    assert kept_all["stats"]["kept_local"] == 2
+    assert database.get_cage(cage_id)["active_count"] == 1  # type: ignore[index]
+    assert database.count_cages() == 1
+
+
+def test_aops_bulk_apply_rolls_back_every_item_if_one_is_now_ahead(
+    database: Database,
+) -> None:
+    first_id = database.create_cage(
+        cage_card_id="CC70000001",
+        animal_count=1,
+        is_breeding_pair=True,
+    )
+    second_id = database.create_cage(
+        cage_card_id="CC70000002",
+        animal_count=1,
+        is_breeding_pair=True,
+    )
+    run = database.create_aops_reconciliation(
+        source_filename="atomic.csv",
+        source_sha256=_aops_digest("atomic"),
+        rows=[
+            _aops_row("CC70000001", status="active", count=2),
+            _aops_row("CC70000002", status="active", count=2),
+        ],
+    )
+    database.add_animals(second_id, count=2)
+
+    with pytest.raises(ValueError, match="now ahead of AOPS"):
+        database.apply_all_aops_reconciliation(run["id"])
+
+    assert database.get_cage(first_id)["active_count"] == 1  # type: ignore[index]
+    assert database.get_cage(second_id)["active_count"] == 3  # type: ignore[index]
+    refreshed = database.get_aops_reconciliation(run["id"])
+    assert refreshed is not None
+    assert refreshed["stats"]["pending"] == 2
+    assert refreshed["stats"]["applied"] == 0
+    assert (
+        database.connection.execute(
+            "SELECT COUNT(*) FROM movements WHERE movement_type = 'aops_reconcile'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_aops_reconciliation_rejects_ambiguous_normalized_input(database: Database) -> None:
+    rows = [
+        _aops_row("CC80000001", status="active", count=1),
+        _aops_row("cc80000001", status="active", count=1),
+    ]
+    with pytest.raises(ValueError, match="must be unique"):
+        database.create_aops_reconciliation(
+            source_filename="duplicates.csv",
+            source_sha256=_aops_digest("duplicates"),
+            rows=rows,
+        )
+
+    with pytest.raises(ValueError, match="invalid AOPS status"):
+        database.create_aops_reconciliation(
+            source_filename="unknown-status.csv",
+            source_sha256=_aops_digest("unknown-status"),
+            rows=[_aops_row("CC80000002", status="mystery", count=1)],
+        )
+    assert (
+        database.connection.execute("SELECT COUNT(*) FROM aops_reconciliations").fetchone()[0] == 0
+    )

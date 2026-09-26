@@ -21,7 +21,7 @@
         <form class="login-form" method="post" action="{{ base_path }}/login">
           <input type="hidden" name="next" value="{{ return_to }}">
           <label class="field login-question">
-            <span>What's the PI's first name?</span>
+            <span>What's your PI's first name?</span>
             <input type="password" name="answer" maxlength="100" autocomplete="off" autocapitalize="none" spellcheck="false"{% if error %} aria-invalid="true" aria-describedby="login-error"{% endif %} required autofocus>
           </label>
           <button class="button button--primary" type="submit">Continue</button>

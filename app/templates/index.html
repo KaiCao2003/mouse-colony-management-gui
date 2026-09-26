@@ -1,3 +1,4 @@
+{% from '_variable_fields.html' import variable_select %}
 <!doctype html>
 <!-- deslop-ignore-file 15 — scientific sex symbols are semantic data -->
 <html lang="en">
@@ -12,15 +13,19 @@
     <script src="{{ url_for('static', path='app.js') }}" defer></script>
   </head>
   <body>
-    <a class="skip-link" href="#main-content">Skip to cages</a>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
 
     <header class="site-header">
       <div class="shell site-header__inner">
         <a class="brand" href="{{ base_path }}/#cages" aria-label="Mouse Line home"><strong>Mouse Line</strong></a>
         <div class="site-header__actions">
-          <nav class="primary-nav" aria-label="Workspace tabs" role="tablist">
-            <a id="workspace-tab-cages" class="primary-nav__link is-active" href="{{ base_path }}/#cages" role="tab" aria-controls="cages" aria-selected="true" data-workspace-tab-link="cages">Cages</a>
-            <a id="workspace-tab-new-cage" class="primary-nav__link" href="{{ base_path }}/#new-cage" role="tab" aria-controls="new-cage" aria-selected="false" data-workspace-tab-link="new-cage">Create cage</a>
+          <nav class="primary-nav" aria-label="Main navigation">
+            <div class="workspace-tabs" aria-label="Workspace tabs" role="tablist">
+              <a id="workspace-tab-cages" class="primary-nav__link is-active" href="{{ base_path }}/#cages" role="tab" aria-controls="cages" aria-selected="true" data-workspace-tab-link="cages">Cages</a>
+              <a id="workspace-tab-new-cage" class="primary-nav__link" href="{{ base_path }}/#new-cage" role="tab" aria-controls="new-cage" aria-selected="false" data-workspace-tab-link="new-cage">Create cage</a>
+              <a id="workspace-tab-aops-review" class="primary-nav__link" href="{{ base_path }}/#aops-review" role="tab" aria-controls="aops-review" aria-selected="false" data-workspace-tab-link="aops-review">Update from CSV</a>
+            </div>
+            <a class="primary-nav__link" href="{{ base_path }}/variables">Variables</a>
           </nav>
           <form class="session-form" method="post" action="{{ base_path }}/logout"><button class="session-link" type="submit" data-pending-label="Signing out…">Log out</button></form>
         </div>
@@ -159,9 +164,9 @@
               <label class="field"><span>Cage card ID <small>optional</small></span><input type="text" name="cage_card_id" maxlength="100" autocomplete="off"></label>
               <label class="field"><span>Number of mice</span><input type="number" name="count" min="0" max="100" step="1" value="0" required></label>
               <label class="field"><span>Sex</span><select name="sex"><option value="U">Unknown</option><option value="F">♀ Female</option><option value="M">♂ Male</option></select></label>
-              <label class="field"><span>Mouse user</span><input type="text" name="mouse_user" list="mouse-user-options" maxlength="100" autocomplete="off"></label>
+              <label class="field"><span>Mouse user</span>{{ variable_select('mouse_user', mouse_user_options, empty_label='No user') }}</label>
               <label class="field"><span>Date of birth</span><input type="date" name="dob"></label>
-              <label class="field field--wide"><span>Genotype</span><input type="text" name="genotype" autocomplete="off"></label>
+              <label class="field field--wide"><span>Genotype</span>{{ variable_select('genotype', genotype_options) }}</label>
               <label class="field"><span>Room</span><select name="room"><option value="" selected>No room</option>{% for room in room_options %}<option value="{{ room }}">{{ room }}</option>{% endfor %}</select></label>
               <label class="check-field"><input type="checkbox" name="is_breeding_pair" value="true"><span><strong>Breeding pair</strong></span></label>
               <label class="field field--full"><span>Note</span><textarea name="note" rows="2" maxlength="4000"></textarea></label>
@@ -170,6 +175,8 @@
           </form>
         </section>
       </section>
+
+      {% include "_aops_review.html" %}
     </main>
 
   </body>

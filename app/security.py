@@ -17,10 +17,14 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.photo_import import MAX_PHOTO_BYTES
+from app.reconciliation import MAX_AOPS_CSV_BYTES
+
 CSRF_HEADER_NAME: Final[str] = "X-CSRF-Token"
 LOGIN_COOKIE_NAME: Final[str] = "mouseline_session"
 LOGIN_SESSION_MAX_AGE_SECONDS: Final[int] = 30 * 24 * 60 * 60
 STATE_CHANGING_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+AOPS_UPLOAD_REQUEST_MAX_BYTES: Final[int] = MAX_AOPS_CSV_BYTES + 64 * 1024
 SECURITY_HEADERS: Final[dict[str, str]] = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": "; ".join(
@@ -143,7 +147,11 @@ class LoginRequiredMiddleware:
             return
 
         route_path = _route_path(scope)
-        if route_path == "/login" or route_path.startswith("/static/"):
+        if (
+            route_path == "/login"
+            or route_path.startswith("/static/")
+            or route_path.startswith("/api/v1/")
+        ):
             await self.app(scope, receive, send)
             return
 
@@ -262,6 +270,19 @@ def _error(code: str) -> JSONResponse:
     return response
 
 
+def _upload_too_large() -> JSONResponse:
+    response = JSONResponse(
+        {
+            "detail": "The AOPS CSV upload request is too large.",
+            "code": "request_too_large",
+        },
+        status_code=413,
+    )
+    for name, value in SECURITY_HEADERS.items():
+        response.headers[name] = value
+    return response
+
+
 class LocalGuardMiddleware:
     def __init__(
         self,
@@ -295,6 +316,27 @@ class LocalGuardMiddleware:
             candidates = headers.getlist(CSRF_HEADER_NAME)
             if len(candidates) != 1 or not self.csrf_manager.validate(candidates[0]):
                 await _error("invalid_csrf")(scope, receive, send)
+                return
+        if scope.get("method", "GET").upper() == "POST" and _route_path(scope) in {
+            "/aops-reconcile/analyze",
+            "/photos/recognize",
+        }:
+            photo_upload = _route_path(scope) == "/photos/recognize"
+            max_bytes = (
+                MAX_PHOTO_BYTES + 64 * 1024 if photo_upload else AOPS_UPLOAD_REQUEST_MAX_BYTES
+            )
+            content_lengths = headers.getlist("content-length")
+            if (
+                len(content_lengths) != 1
+                or not content_lengths[0].isdigit()
+                or int(content_lengths[0]) > max_bytes
+            ):
+                response = (
+                    JSONResponse({"detail": "Photo must be at most 20 MB."}, status_code=413)
+                    if photo_upload
+                    else _upload_too_large()
+                )
+                await response(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 
