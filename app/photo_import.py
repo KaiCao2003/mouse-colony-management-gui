@@ -230,5 +230,11 @@ def _archive_and_read(
             ) from exc
     if recognition_error is not None:
         raise recognition_error
+    try:
+        photo = store.save_recognition(photo, result)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail="Photo saved, but recognition results could not be saved."
+        ) from exc
     result["photo"] = _photo_links(request, photo)
     return result

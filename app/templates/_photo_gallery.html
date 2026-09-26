@@ -3,7 +3,23 @@
   <div class="disclosure__body photo-gallery__grid" data-photo-gallery-items>
     {% for photo in photos %}
       <figure class="photo-gallery__item">
-        <a href="{{ photo.preview_url }}" target="_blank" rel="noopener"><img src="{{ photo.preview_url }}" alt="{{ photo.filename }}" loading="lazy"></a>
+        <a class="photo-gallery__preview" href="{{ photo.preview_url }}" target="_blank" rel="noopener"><img src="{{ photo.preview_url }}" alt="{{ photo.filename }}" loading="lazy"></a>
+        {% if photo.recognition %}
+          <div class="photo-gallery__recognition">
+            <h3>From photo</h3>
+            <div class="photo-card-details"><span>Cage <strong>{{ photo.recognition.cage_card_id or '' }}</strong></span><span>Line <strong>{{ photo.recognition.line or '' }}</strong></span></div>
+            <div class="table-scroll">
+              <table class="data-table photo-gallery__table">
+                <thead><tr><th scope="col">Mouse ID</th><th scope="col">Sex</th><th scope="col">DOB</th><th scope="col">Genotype</th></tr></thead>
+                <tbody>
+                  {% for mouse in photo.recognition.rows %}
+                    <tr><td>{{ mouse.mouse_id or '' }}</td><td>{{ mouse.sex or '' }}</td><td>{{ mouse.dob or '' }}</td><td>{{ mouse.genotype or '' }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        {% endif %}
         <figcaption><span>{{ photo.filename }}</span><a href="{{ photo.original_url }}" download="{{ photo.filename }}">Download original</a></figcaption>
       </figure>
     {% endfor %}

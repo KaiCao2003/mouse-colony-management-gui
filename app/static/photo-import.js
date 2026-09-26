@@ -45,6 +45,7 @@
       const figure = document.createElement("figure");
       figure.className = "photo-gallery__item";
       const previewLink = document.createElement("a");
+      previewLink.className = "photo-gallery__preview";
       previewLink.href = photo.preview_url;
       previewLink.target = "_blank";
       previewLink.rel = "noopener";
@@ -61,7 +62,51 @@
       originalLink.download = photo.filename;
       originalLink.textContent = "Download original";
       caption.append(filename, originalLink);
-      figure.append(previewLink, caption);
+      figure.append(previewLink);
+      if (photo.recognition) {
+        const recognition = document.createElement("div");
+        recognition.className = "photo-gallery__recognition";
+        const heading = document.createElement("h3");
+        heading.textContent = "From photo";
+        const metadata = document.createElement("div");
+        metadata.className = "photo-card-details";
+        for (const [label, value] of [["Cage", photo.recognition.cage_card_id], ["Line", photo.recognition.line]]) {
+          const field = document.createElement("span");
+          field.textContent = `${label} `;
+          const detail = document.createElement("strong");
+          detail.textContent = value || "";
+          field.append(detail);
+          metadata.append(field);
+        }
+        const scroll = document.createElement("div");
+        scroll.className = "table-scroll";
+        const table = document.createElement("table");
+        table.className = "data-table photo-gallery__table";
+        const header = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        for (const label of ["Mouse ID", "Sex", "DOB", "Genotype"]) {
+          const cell = document.createElement("th");
+          cell.scope = "col";
+          cell.textContent = label;
+          headerRow.append(cell);
+        }
+        header.append(headerRow);
+        const body = document.createElement("tbody");
+        for (const mouse of photo.recognition.rows) {
+          const row = document.createElement("tr");
+          for (const value of [mouse.mouse_id, mouse.sex, mouse.dob, mouse.genotype]) {
+            const cell = document.createElement("td");
+            cell.textContent = value || "";
+            row.append(cell);
+          }
+          body.append(row);
+        }
+        table.append(header, body);
+        scroll.append(table);
+        recognition.append(heading, metadata, scroll);
+        figure.append(recognition);
+      }
+      figure.append(caption);
       return figure;
     });
     galleryItems.replaceChildren(...pictures);

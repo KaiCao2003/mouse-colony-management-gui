@@ -157,7 +157,7 @@ def test_cage_photos_preserve_originals_deduplicate_and_survive_restart(
     recognized = photo_import.parse_card_lines(_sample(0))
     monkeypatch.setattr(photo_import, "recognize_photo", lambda payload: copy.deepcopy(recognized))
     with _client(tmp_path, root_path="/colony") as client:
-        cage_id = client.app.state.database.create_cage(cage_card_id="CC00001234")
+        cage_id = client.app.state.database.create_cage(cage_card_id="CC00001234", animal_count=3)
         page = client.get(f"/cages/{cage_id}")
         gallery_tag = re.search(r"<details\b[^>]*data-photo-gallery[^>]*>", page.text)
         assert gallery_tag is not None and " hidden" in gallery_tag.group()
@@ -173,6 +173,7 @@ def test_cage_photos_preserve_originals_deduplicate_and_survive_restart(
         assert photo["id"] == hashlib.sha256(photo_bytes).hexdigest()
         assert photo["cage_id"] == cage_id
         assert photo["filename"] == "card.png" and photo["created_at"]
+        assert photo["recognition"] == recognized
         assert photo["preview_url"].startswith(f"/colony/cages/{cage_id}/photos/")
         original = client.get(photo["original_url"])
         assert original.status_code == 200 and original.content == photo_bytes
@@ -186,18 +187,75 @@ def test_cage_photos_preserve_originals_deduplicate_and_survive_restart(
             headers=_csrf(client),
         )
         assert repeat.status_code == 200 and repeat.json()["photo"]["id"] == photo["id"]
+        assert repeat.json()["photo"]["recognition"] == recognized
         assert len(client.get(f"/cages/{cage_id}/photos").json()["photos"]) == 1
         assert len(list((tmp_path / "photos").rglob("original.*"))) == 1
     with _client(tmp_path, root_path="/colony") as restarted:
         photos = restarted.get(f"/cages/{cage_id}/photos").json()["photos"]
         assert len(photos) == 1 and photos[0]["id"] == photo["id"]
+        assert photos[0]["recognition"] == recognized
         assert restarted.get(photos[0]["original_url"]).content == photo_bytes
+        database = restarted.app.state.database
+        mouse = database.list_animals(cage_id)[0]
+        database.update_animal(mouse["id"], dob="2026-02-20")
+        assert database.get_animal(mouse["id"])["dob"] == "2026-02-20"
+        assert restarted.get(f"/cages/{cage_id}/photos").json()["photos"][0][
+            "recognition"
+        ] == recognized
         page = restarted.get(f"/cages/{cage_id}")
         gallery_tag = re.search(r"<details\b[^>]*data-photo-gallery[^>]*>", page.text)
         assert gallery_tag is not None
         assert " open" not in gallery_tag.group() and " hidden" not in gallery_tag.group()
         assert photos[0]["preview_url"] in page.text
         assert "Download original" in page.text
+        gallery = re.search(
+            r"<details\b[^>]*data-photo-gallery[^>]*>.*?</details>", page.text, flags=re.DOTALL
+        )
+        assert gallery is not None
+        assert ">DOB<" in gallery.group()
+        for row in recognized["rows"]:
+            assert row["mouse_id"] in gallery.group() and row["dob"] in gallery.group()
+        assert recognized["line"] in gallery.group()
+
+
+def test_repeated_recognition_updates_only_snapshot_and_failure_preserves_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, photo_bytes: bytes
+) -> None:
+    recognized = photo_import.parse_card_lines(_sample(0))
+    monkeypatch.setattr(photo_import, "recognize_photo", lambda payload: copy.deepcopy(recognized))
+    with _client(tmp_path) as client:
+        cage_id = client.app.state.database.create_cage(cage_card_id="CC00001234")
+        headers = _csrf(client)
+        first = client.post(
+            "/photos/recognize", files={"photo_file": ("first.png", photo_bytes)}, headers=headers
+        )
+        assert first.status_code == 200
+        original_photo = first.json()["photo"]
+        assert original_photo["recognition"] == recognized
+        recognized["rows"][0].update({"dob": "2026-02-21", "sex": "F", "genotype": "WT"})
+        repeated = client.post(
+            "/photos/recognize", files={"photo_file": ("second.png", photo_bytes)}, headers=headers
+        )
+        assert repeated.status_code == 200
+        updated_photo = repeated.json()["photo"]
+        for key in ("id", "filename", "created_at", "cage_id"):
+            assert updated_photo[key] == original_photo[key]
+        assert updated_photo["recognition"] == recognized
+
+        def fail(payload: bytes) -> dict:
+            raise RuntimeError("Recognition models are unavailable.")
+
+        monkeypatch.setattr(photo_import, "recognize_photo", fail)
+        failed = client.post(
+            "/photos/recognize",
+            files={"photo_file": ("third.png", photo_bytes)},
+            data={"cage_id": str(cage_id)},
+            headers=headers,
+        )
+        assert failed.status_code == 503
+        stored = client.get(f"/cages/{cage_id}/photos").json()["photos"]
+        assert stored == [updated_photo]
+        assert client.get(stored[0]["original_url"]).content == photo_bytes
 
 
 @pytest.mark.parametrize("recognized_card", [None, "CC00001234"])
@@ -302,7 +360,7 @@ def test_invalid_and_oversize_uploads_do_not_create_archives(
         assert not list((tmp_path / "photos").rglob("original.*"))
 
 
-@pytest.mark.parametrize("operation", ["save", "assign"])
+@pytest.mark.parametrize("operation", ["save", "assign", "save_recognition"])
 def test_storage_failures_are_reported_without_false_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, photo_bytes: bytes, operation: str
 ) -> None:

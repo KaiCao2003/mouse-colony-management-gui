@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,57 @@ def test_duplicate_upload_keeps_first_metadata_and_original(tmp_path: Path) -> N
     assert store.list(84) == [first]
     assert not (tmp_path / "unassigned" / first["id"]).exists()
     assert store.file(84, first["id"], "original")[0].read_bytes() == payload
+
+
+def test_recognition_survives_assignment_and_store_reload(tmp_path: Path) -> None:
+    store = PhotoStore(tmp_path)
+    payload = _image()
+    photo = store.save(payload, "card.png")
+    recognition = {
+        "cage_card_id": "CC00001234",
+        "line": "Example-Cre line 8",
+        "rows": [
+            {"mouse_id": "10001", "sex": "M", "dob": "2026-01-15", "genotype": "+"},
+            {"mouse_id": "10002", "sex": None, "dob": None, "genotype": None},
+        ],
+    }
+    recorded = store.save_recognition(photo, recognition)
+    assert recorded["recognition"] == recognition
+    for key in ("id", "filename", "created_at", "cage_id"):
+        assert recorded[key] == photo[key]
+    assigned = store.assign(recorded, 84)
+    reloaded = PhotoStore(tmp_path)
+    assert reloaded.list(84) == [assigned]
+    assert reloaded.list(84)[0]["recognition"] == recognition
+    assert reloaded.file(84, photo["id"], "original")[0].read_bytes() == payload
+
+
+def test_failed_recognition_update_preserves_previous_metadata_and_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PhotoStore(tmp_path)
+    payload = _image()
+    photo = store.save(payload, "card.png", 84)
+    recognition = {
+        "cage_card_id": "CC00001234",
+        "line": None,
+        "rows": [{"mouse_id": "10001", "sex": "M", "dob": "2026-01-15", "genotype": "+"}],
+    }
+    recorded = store.save_recognition(photo, recognition)
+    metadata_path = tmp_path / "84" / photo["id"] / "metadata.json"
+    before = metadata_path.read_bytes()
+
+    def fail_replace(*args: Any, **kwargs: Any) -> None:
+        raise OSError("Shared drive is unavailable")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    updated = {**recognition, "rows": [{**recognition["rows"][0], "dob": "2026-02-21"}]}
+    with pytest.raises(OSError, match="Shared drive is unavailable"):
+        store.save_recognition(recorded, updated)
+    assert metadata_path.read_bytes() == before
+    assert json.loads(before) == recorded
+    assert PhotoStore(tmp_path).list(84) == [recorded]
+    assert store.file(84, photo["id"], "original")[0].read_bytes() == payload
 
 
 def test_preview_orients_resizes_and_flattens_transparency(tmp_path: Path) -> None:

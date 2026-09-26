@@ -2618,14 +2618,22 @@ a.tag:hover {
 
 .photo-gallery__grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
   background: #fff;
 }
 
 .photo-gallery__item {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 12px 24px;
   min-width: 0;
   margin: 0;
+}
+
+.photo-gallery__preview {
+  grid-column: 1;
+  grid-row: 1;
 }
 
 .photo-gallery__item img {
@@ -2637,10 +2645,11 @@ a.tag:hover {
 }
 
 .photo-gallery__item figcaption {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   font-size: 12px;
 }
 
@@ -2651,4 +2660,23 @@ a.tag:hover {
 
 .photo-gallery__item figcaption a {
   flex-shrink: 0;
+}
+
+.photo-gallery__recognition {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+}
+
+.photo-gallery__recognition h3 {
+  margin-bottom: 8px;
+}
+
+.photo-gallery__recognition .photo-card-details {
+  margin-bottom: 12px;
+}
+
+.photo-gallery__table td:last-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }

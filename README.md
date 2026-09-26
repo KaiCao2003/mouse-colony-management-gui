@@ -146,3 +146,6 @@ matching or explicitly selected cage stay in `unassigned`. Re-uploading the same
 photo to the same cage does not add a duplicate. The archive has no automatic cleanup.
 Cage pages show a collapsed **Show pictures** section only when photos exist;
 previews and original downloads require the same login as the rest of the app.
+Each photo keeps its OCR results, including mouse IDs, sex, date of birth and
+genotype, beside the preview. These results describe the photo and remain
+separate from subsequent changes to mouse records.

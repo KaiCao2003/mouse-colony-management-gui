@@ -11,7 +11,7 @@ import shutil
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any
 
 _PHOTO_ID = re.compile(r"[a-f0-9]{64}")
@@ -141,6 +141,25 @@ class PhotoStore:
                 return []
             raise
         return sorted(photos, key=lambda photo: (photo["created_at"], photo["id"]), reverse=True)
+
+    def save_recognition(
+        self, photo: dict[str, Any], recognition: dict[str, Any]
+    ) -> dict[str, Any]:
+        directory = self._directory(photo["cage_id"], photo["id"])
+        metadata = self._metadata(directory)
+        metadata["recognition"] = {
+            key: recognition[key] for key in ("cage_card_id", "line", "rows")
+        }
+        # Keep the photo's OCR snapshot separate from later edits to mouse records.
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as file:
+            pending = Path(file.name)
+            try:
+                json.dump(metadata, file, ensure_ascii=False)
+                file.close()
+                pending.replace(directory / "metadata.json")
+            finally:
+                pending.unlink(missing_ok=True)
+        return metadata
 
     def file(self, cage_id: int, photo_id: str, kind: str) -> tuple[Path, dict[str, Any]]:
         if kind not in {"preview", "original"}:
