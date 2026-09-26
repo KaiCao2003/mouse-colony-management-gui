@@ -163,4 +163,16 @@
     }
     showStatus(changed ? `Applied to ${changed} ${changed === 1 ? "mouse" : "mice"}. Save all mice to save.` : "No changes to apply.");
   });
+
+  // Carry the homepage recognition result into this cage without uploading again.
+  try {
+    const pending = JSON.parse(sessionStorage.getItem("mouseline:photo-import") || "null");
+    if (pending && pending.cage_id === Number(root.dataset.cageId) && Array.isArray(pending.rows)) {
+      sessionStorage.removeItem("mouseline:photo-import");
+      root.open = true;
+      showPreview(pending);
+    }
+  } catch {
+    showStatus("Could not load the photo preview. Choose the photo again.");
+  }
 })();

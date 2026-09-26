@@ -11,6 +11,7 @@
     <title>Mouse Line</title>
     <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
     <script src="{{ url_for('static', path='app.js') }}" defer></script>
+    <script src="{{ url_for('static', path='photo-upload.js') }}" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -43,6 +44,8 @@
           <h1 id="page-title" data-workspace-heading tabindex="-1">Cages</h1>
           <a class="button button--primary" href="#new-cage">New cage</a>
         </section>
+
+        {% include '_photo_upload.html' %}
 
         <section class="summary-grid" aria-label="Colony totals">
           <a class="metric-card" href="{{ base_path }}/?status=active&amp;view=all#cages"><span class="metric-card__label">Active cages</span><strong class="metric-card__value">{{ summary.active_cages }}</strong></a>

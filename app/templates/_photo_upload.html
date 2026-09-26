@@ -1,0 +1,18 @@
+<section id="photo-upload" class="panel photo-upload-panel" aria-labelledby="photo-upload-title" data-photo-upload data-base-path="{{ base_path }}">
+  <h2 id="photo-upload-title">Upload cage card</h2>
+  <form class="photo-upload" method="post" action="{{ base_path }}/photos/recognize" enctype="multipart/form-data" data-photo-upload-form>
+    <label class="field"><span>Photo</span><input type="file" name="photo_file" accept="image/jpeg,image/png,image/heic,image/heif,.heic,.heif,.jpg,.jpeg,.png" required></label>
+    <button class="button button--primary" type="submit">Read photo</button>
+  </form>
+  <p class="photo-status" data-photo-upload-status role="status" aria-live="polite" hidden></p>
+  <div class="photo-preview" data-photo-upload-result hidden>
+    <div class="photo-card-details"><span>Cage <strong data-photo-upload-cage></strong></span><span data-photo-upload-line></span></div>
+    <div class="table-scroll">
+      <table class="data-table photo-upload-table">
+        <thead><tr><th scope="col">Mouse ID</th><th scope="col">Sex</th><th scope="col">DOB</th><th scope="col">Photo genotype</th></tr></thead>
+        <tbody data-photo-upload-rows></tbody>
+      </table>
+    </div>
+    <div class="form-actions"><a class="button button--primary" data-photo-upload-open hidden>Open cage</a></div>
+  </div>
+</section>

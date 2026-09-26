@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from test_routes import _client, _csrf
+from test_routes import _assert_form_not_inside_details, _client, _colony_snapshot, _csrf
 
 from app import photo_import
 
@@ -68,9 +68,37 @@ def test_photo_preview_matches_cage_and_leaves_records_unchanged(
         assert 'action="/colony/photos/recognize"' in page.text
         assert "photo-import.js" in page.text
         assert "data-save-all-mice" in page.text
+        home = client.get("/")
+        _assert_form_not_inside_details(home.text, "/colony/photos/recognize")
+        assert 'type="file" name="photo_file"' in home.text
         assert (
             client.post("/photos/recognize", files={"photo_file": ("x", b"x")}).status_code == 403
         )
+
+
+@pytest.mark.parametrize("cage_status", ["active", "inactive", "missing"])
+def test_photo_entry_resolves_existing_cages_without_changing_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cage_status: str
+) -> None:
+    recognized = photo_import.parse_card_lines(_sample(0))
+    monkeypatch.setattr(photo_import, "recognize_photo", lambda payload: copy.deepcopy(recognized))
+    with _client(tmp_path, root_path="/colony") as client:
+        database = client.app.state.database
+        cage_id = None
+        if cage_status != "missing":
+            cage_id = database.create_cage(cage_card_id="CC00001234", animal_count=3)
+            if cage_status == "inactive":
+                database.toggle_cage(cage_id)
+        before = _colony_snapshot(database)
+        response = client.post(
+            "/photos/recognize", files={"photo_file": ("card.heic", b"test")}, headers=_csrf(client)
+        )
+        assert response.status_code == 200
+        assert response.json()["cage_id"] == cage_id
+        assert response.json()["rows"] == recognized["rows"]
+        assert _colony_snapshot(database) == before
+        if cage_id is not None:
+            assert client.get(f"/cages/{cage_id}").status_code == 200
 
 
 def test_photo_errors_release_worker_and_reject_large_requests(

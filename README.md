@@ -128,8 +128,9 @@ classification are retained when a room is renamed.
 
 ## Cage card photos
 
-The cage page can read a JPEG, PNG, or HEIC card photo on the server and fill
-mouse edit drafts. Review the detected cage, choose each target mouse, then use
+Use **Upload cage card** at the top of **Cages** to read a JPEG, PNG, or HEIC photo
+and open its matching cage. The cage page also accepts photos and fills mouse
+edit drafts. Review the detected cage, choose each target mouse, then use
 **Apply to mice** and **Save all mice**. Missing fields leave existing values alone.
 Photo genotype text is shown separately from the configured genotype choices.
 

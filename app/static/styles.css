@@ -2559,6 +2559,14 @@ a.tag:hover {
   }
 }
 
+.photo-upload-panel {
+  padding: 16px;
+}
+
+.photo-upload-panel h2 {
+  margin-bottom: 12px;
+}
+
 .photo-upload {
   display: flex;
   align-items: end;
